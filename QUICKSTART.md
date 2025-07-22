@@ -1,15 +1,15 @@
-# ? 快速入门指南
+# 快速入门指南
 
 这个指南将帮助你快速上手 Decoder-only Transformer with MLA 项目。
 
-## ? 前置要求
+## 前置要求
 
 - Python 3.8+
 - PyTorch 2.1+
 - 8GB+ RAM (推荐)
 - GPU (可选，但推荐用于训练)
 
-## ? 5分钟快速体验
+## 5分钟快速体验
 
 ### 1. 安装依赖
 
@@ -23,7 +23,7 @@ pip install torch einops transformers datasets numpy tqdm matplotlib
 python simple_test.py
 ```
 
-如果看到 "? All tests passed!" 说明安装成功！
+如果看到 "All tests passed!" 说明安装成功！
 
 ### 3. 查看功能演示
 
@@ -33,7 +33,7 @@ python examples/demo.py --demo creation
 
 这将展示不同大小的模型配置。
 
-## ? 核心功能体验
+## 核心功能体验
 
 ### 创建和测试模型
 
@@ -81,7 +81,7 @@ print(f"输入长度: {input_ids.shape[1]}")
 print(f"生成长度: {generated.shape[1]}")
 ```
 
-## ?? 训练模型
+## 训练模型
 
 ### 快速训练测试
 
@@ -107,7 +107,7 @@ python examples/train.py \
 
 训练完成后，模型会保存在 `./checkpoints/` 目录下。
 
-## ? 文本生成
+## 文本生成
 
 ### 交互式生成
 
@@ -129,7 +129,7 @@ python examples/generate.py \
     --output_file results.json
 ```
 
-## ? 自定义配置
+## 自定义配置
 
 ### 创建自定义模型配置
 
@@ -165,7 +165,7 @@ ffn = get_ffn(args, ffn_type="geglu")
 ffn = get_ffn(args, ffn_type="standard")
 ```
 
-## ? 测试和验证
+## 测试和验证
 
 ### 运行完整验证
 
@@ -188,7 +188,7 @@ validation_results = validate_model_architecture(model, args)
 print(f"验证通过: {validation_results['passed']}")
 ```
 
-## ? 性能分析
+## 性能分析
 
 ### 模型信息分析
 
@@ -214,7 +214,7 @@ results = benchmark_model_speed(model)
 print(f"前向传播速度: {results['forward_pass_times']}")
 ```
 
-## ? 高级功能
+## 高级功能
 
 ### 权重分布可视化
 
@@ -242,7 +242,7 @@ print(f"标准注意力参数: {std_params:,}")
 print(f"参数比例: {mla_params/std_params:.2f}")
 ```
 
-## ? 常见问题
+## 常见问题
 
 ### Q: 运行时出现内存不足错误
 A: 尝试减小批次大小或使用更小的模型配置：
@@ -271,14 +271,14 @@ from src.model_utils import load_model_for_inference
 model, args, tokenizer = load_model_for_inference("./checkpoints/best_checkpoint.pt")
 ```
 
-## ? 进一步学习
+## 进一步学习
 
 1. **阅读源码**: 从 `src/config.py` 开始，了解模型配置
 2. **查看测试**: `tests/test_model.py` 展示了各组件的使用方法
 3. **研究论文**: 了解 MLA、RoPE、SwiGLU 等技术的原理
 4. **实验改进**: 尝试修改架构或添加新功能
 
-## ? 恭喜！
+## 恭喜！
 
 你现在已经掌握了 Decoder-only Transformer with MLA 的基本使用方法。这个实现包含了最新的 Transformer 架构改进，可以用于研究和实际应用。
 

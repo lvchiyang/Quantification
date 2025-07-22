@@ -1,6 +1,6 @@
 """
-???????????????
-???? RMSNorm??RoPE ????????
+工具函数和基础组件
+包含 RMSNorm、RoPE 等基础实现
 """
 
 import torch
@@ -12,64 +12,65 @@ from typing import Tuple, Optional
 class RMSNorm(nn.Module):
     """
     Root Mean Square Layer Normalization
-    ??? LayerNorm??RMSNorm ???????????????????
+    相比 LayerNorm，RMSNorm 不减去均值，只进行缩放
     """
-    
+
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: ???????? [..., dim]
+            x: 输入张量 [..., dim]
         Returns:
-            ????????????
+            归一化后的张量
         """
-        # ???? RMS
+        # 计算 RMS
         norm = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
         return self.weight * norm
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 1e4) -> torch.Tensor:
     """
-    ????? RoPE ????????
-    
+    预计算 RoPE 的复数频率
+
     Args:
-        dim: RoPE ?????????????
-        end: ??????г???
-        theta: ??????????
-    
+        dim: RoPE 维度，必须是偶数
+        end: 最大序列长度
+        theta: 基础频率参数
+
     Returns:
-        ??????????? [end, dim//2]
+        复数频率张量 [end, dim//2]
     """
-    # ???????
+    # 计算频率
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    
-    # ????λ??????
+
+    # 生成位置索引
     t = torch.arange(end, device=freqs.device, dtype=freqs.dtype)
-    
-    # ??????????λ?ú????????
+
+    # 外积得到所有位置和频率的组合
     freqs = torch.outer(t, freqs).float()
-    
-    # ??????????? e^(i*theta) = cos(theta) + i*sin(theta)
+
+    # 转换为复数形式 e^(i*theta) = cos(theta) + i*sin(theta)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-    
+
     return freqs_cis
 
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     """
-    Adjust freqs_cis shape for broadcasting with x
+    调整 freqs_cis 的形状以便与 x 进行广播
 
     Args:
-        freqs_cis: Complex frequencies [seq_len, dim//2]
-        x: Input tensor [batch_size, seq_len, n_heads, head_dim]
+        freqs_cis: 复数频率 [seq_len, dim//2]
+        x: 输入张量 [batch_size, seq_len, n_heads, head_dim]
 
     Returns:
-        Reshaped freqs_cis [1, seq_len, 1, dim//2]
+        调整形状后的 freqs_cis [1, seq_len, 1, dim//2]
     """
+    # Check input shape
     ndim = x.ndim
     assert 0 <= 1 < ndim
     assert freqs_cis.shape == (x.shape[1], x.shape[-1])
@@ -78,47 +79,47 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Ten
 
 
 def apply_rotary_emb(
-    xq: torch.Tensor, 
-    xk: torch.Tensor, 
+    xq: torch.Tensor,
+    xk: torch.Tensor,
     freqs_cis: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    ??????λ???????????????
-    
+    应用旋转位置编码到查询和键张量
+
     Args:
-        xq: ??????? [batch_size, seq_len, n_heads, head_dim]
-        xk: ?????? [batch_size, seq_len, n_heads, head_dim]
-        freqs_cis: ??????? [seq_len, head_dim//2]
-    
+        xq: 查询张量 [batch_size, seq_len, n_heads, head_dim]
+        xk: 键张量 [batch_size, seq_len, n_heads, head_dim]
+        freqs_cis: 复数频率 [seq_len, head_dim//2]
+
     Returns:
-        ??? RoPE ??? (xq, xk)
+        应用 RoPE 后的 (xq, xk)
     """
-    # ??????????????????????
+    # 将实数张量重塑为复数张量
     # [batch_size, seq_len, n_heads, head_dim] -> [batch_size, seq_len, n_heads, head_dim//2]
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    
-    # ???? freqs_cis ???????
+
+    # 调整 freqs_cis 形状以便广播
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    
-    # ???????????????
+
+    # 应用旋转：复数乘法
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    
-    # ???????????????
+
+    # 转换回原始数据类型
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
 def create_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
     """
-    ????????????????
-    
+    创建因果注意力掩码
+
     Args:
-        seq_len: ???г???
-        device: ?豸
-    
+        seq_len: 序列长度
+        device: 设备
+
     Returns:
-        ??????? [seq_len, seq_len]????????? -inf
+        因果掩码 [seq_len, seq_len]，上三角为 -inf
     """
     mask = torch.full((seq_len, seq_len), float("-inf"), device=device)
     mask = torch.triu(mask, diagonal=1)
@@ -127,60 +128,60 @@ def create_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
 
 def scaled_dot_product_attention(
     query: torch.Tensor,
-    key: torch.Tensor, 
+    key: torch.Tensor,
     value: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False
 ) -> torch.Tensor:
     """
-    ???????????
-    
+    缩放点积注意力
+
     Args:
         query: [batch_size, seq_len, n_heads, head_dim]
-        key: [batch_size, seq_len, n_heads, head_dim]  
+        key: [batch_size, seq_len, n_heads, head_dim]
         value: [batch_size, seq_len, n_heads, head_dim]
-        attn_mask: ?????????
-        dropout_p: dropout ????
-        is_causal: ?????????????
-    
+        attn_mask: 注意力掩码
+        dropout_p: dropout 概率
+        is_causal: 是否使用因果掩码
+
     Returns:
-        ???????? [batch_size, seq_len, n_heads, head_dim]
+        注意力输出 [batch_size, seq_len, n_heads, head_dim]
     """
-    # ?????????????
+    # 计算注意力分数
     # [batch_size, n_heads, seq_len, seq_len]
     scores = torch.einsum("bshd,bthd->bhst", query, key) / math.sqrt(query.shape[-1])
-    
-    # ???????
+
+    # 应用掩码
     if is_causal:
         seq_len = query.shape[1]
         causal_mask = create_causal_mask(seq_len, query.device)
         scores = scores + causal_mask
-    
+
     if attn_mask is not None:
         scores = scores + attn_mask
-    
+
     # Softmax
     attn_weights = torch.softmax(scores, dim=-1)
-    
+
     # Dropout
     if dropout_p > 0.0:
         attn_weights = torch.dropout(attn_weights, dropout_p, train=True)
-    
-    # ???????????
+
+    # 应用注意力权重
     # [batch_size, seq_len, n_heads, head_dim]
     output = torch.einsum("bhst,bthd->bshd", attn_weights, value)
-    
+
     return output
 
 
 def count_parameters(model: nn.Module) -> int:
-    """??????????????"""
+    """计算模型参数数量"""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def get_device() -> torch.device:
-    """????????豸"""
+    """获取可用设备"""
     if torch.cuda.is_available():
         return torch.device("cuda")
     elif torch.backends.mps.is_available():
