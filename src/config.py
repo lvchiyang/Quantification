@@ -1,6 +1,6 @@
 """
-Ä£ĞÍÅäÖÃÀà
-¶¨Òå Decoder-only Transformer Ä£ĞÍµÄËùÓĞ³¬²ÎÊı
+æ¨¡å‹é…ç½®æ–‡ä»¶
+å®šä¹‰ Decoder-only Transformer æ¨¡å‹çš„å„ç§è¶…å‚æ•°
 """
 
 from dataclasses import dataclass
@@ -9,54 +9,84 @@ from typing import Optional
 
 @dataclass
 class ModelArgs:
-    """Ä£ĞÍÅäÖÃ²ÎÊı"""
+    """æ¨¡å‹é…ç½®å‚æ•°"""
+
+    # æ¨¡å‹æ¶æ„å‚æ•°
+    d_model: int = 1024           # éšè—ç»´åº¦ h
+    n_layers: int = 24            # Transformer å±‚æ•°
+    n_heads: int = 16             # æŸ¥è¯¢å¤´æ•°
+
+    # MLA ç›¸å…³å‚æ•°
+    kv_lora_rank: int = 512       # MLA ä¸­ K/V å‹ç¼©ç»´åº¦
+    qk_rope_head_dim: int = 64    # RoPE ç»´åº¦
+    qk_nope_head_dim: int = 128   # é RoPE æŸ¥è¯¢/é”®ç»´åº¦
+    v_head_dim: int = 128         # å€¼å¤´ç»´åº¦
+
+    # FFN å‚æ•°
+    intermediate_size: int = 2816 # SwiGLU ä¸­é—´ç»´åº¦ â‰ˆ 2/3 * 4h
     
-    # Ä£ĞÍ¼Ü¹¹²ÎÊı
-    d_model: int = 1024           # Òş²ØÎ¬¶È h
-    n_layers: int = 24            # Transformer ²ãÊı
-    n_heads: int = 16             # ²éÑ¯Í·Êı
+    # é‡‘èæ•°æ®å‚æ•°
+    n_features: int = 11          # è¾“å…¥ç‰¹å¾æ•°ï¼ˆå¼€ç›˜ã€æœ€é«˜ã€æœ€ä½ã€æ”¶ç›˜ç­‰ï¼‰
+    n_predictions: int = 7        # ä»·æ ¼é¢„æµ‹æ—¶é—´ç‚¹æ•°é‡
+    n_trading_days: int = 20      # äº¤æ˜“ç­–ç•¥é¢„æµ‹å¤©æ•°
+    max_seq_len: int = 2048       # æœ€å¤§åºåˆ—é•¿åº¦
+
+    # äº¤æ˜“ç­–ç•¥å‚æ•°
+    position_range_min: int = 0   # ä»“ä½æœ€å°å€¼ï¼ˆç©ºä»“ï¼‰
+    position_range_max: int = 10  # ä»“ä½æœ€å¤§å€¼ï¼ˆæ»¡ä»“ï¼‰
+    enable_trading_strategy: bool = True  # æ˜¯å¦å¯ç”¨äº¤æ˜“ç­–ç•¥å­¦ä¹ 
+    sliding_window_mode: bool = True      # æ˜¯å¦ä½¿ç”¨æ»‘åŠ¨çª—å£æ¨¡å¼
+    position_method: str = 'gumbel_softmax'  # ä»“ä½ç¦»æ•£åŒ–æ–¹æ³•: 'gumbel_softmax', 'straight_through', 'concrete'
+
+    # é€’å½’çŠ¶æ€å‚æ•°
+    enable_stateful_training: bool = True     # æ˜¯å¦å¯ç”¨çŠ¶æ€åŒ–è®­ç»ƒ
+    strategy_state_dim: int = 256             # ç­–ç•¥çŠ¶æ€ç»´åº¦
+    state_update_method: str = 'gru'          # çŠ¶æ€æ›´æ–°æ–¹æ³•: 'gru', 'lstm', 'attention'
+    state_dropout: float = 0.1                # çŠ¶æ€æ›´æ–°çš„dropout
+
+    # å¸‚åœºåˆ†ç±»å‚æ•°
+    market_classification_method: str = 'comprehensive'  # å¸‚åœºåˆ†ç±»æ–¹æ³•
+    bull_threshold: float = 0.008             # ç‰›å¸‚é˜ˆå€¼
+    bear_threshold: float = -0.008            # ç†Šå¸‚é˜ˆå€¼
+    market_window_size: int = 5               # å¸‚åœºçŠ¶æ€åˆ¤æ–­çª—å£å¤§å°
     
-    # MLA Ïà¹Ø²ÎÊı
-    kv_lora_rank: int = 512       # MLA ÖĞ K/V Ñ¹ËõÎ¬¶È
-    qk_rope_head_dim: int = 64    # RoPE Î¬¶È
-    qk_nope_head_dim: int = 128   # ·Ç RoPE ²éÑ¯/¼üÎ¬¶È
-    v_head_dim: int = 128         # ÖµÍ·Î¬¶È
-    
-    # FFN ²ÎÊı
-    intermediate_size: int = 2816 # SwiGLU ÖĞ¼äÎ¬¶È ¡Ö 2/3 * 4h
-    
-    # ½ğÈÚÊı¾İ²ÎÊı
-    n_features: int = 11          # ÊäÈëÌØÕ÷ÊıÁ¿£¨¿ªÅÌ¡¢×î¸ß¡¢×îµÍ¡¢ÊÕÅÌµÈ£©
-    n_predictions: int = 7        # Ô¤²âÊ±¼äµãÊıÁ¿
-    max_seq_len: int = 2048       # ×î´óĞòÁĞ³¤¶È
-    
-    # ÕıÔò»¯
+    # æ­£åˆ™åŒ–
     dropout: float = 0.0
     layer_norm_eps: float = 1e-6
-    
-    # RoPE ²ÎÊı
+
+    # RoPE å‚æ•°
     rope_theta: float = 1e4
-    
-    # ÑµÁ·²ÎÊı
+
+    # è®­ç»ƒå‚æ•°
     learning_rate: float = 2e-4
     weight_decay: float = 0.1
     beta1: float = 0.9
     beta2: float = 0.95
-    
-    # ÆäËû
-    tie_word_embeddings: bool = False  # ÊÇ·ñ¹²ÏíÊäÈëÊä³öÇ¶Èë
-    
+
+    # å¤šä»»åŠ¡æŸå¤±å‡½æ•°æƒé‡
+    price_loss_weight: float = 1.0      # ä»·æ ¼é¢„æµ‹æŸå¤±æƒé‡
+    trading_loss_weight: float = 0.1    # äº¤æ˜“ç­–ç•¥æŸå¤±æƒé‡
+
+    # ä¿¡æ¯æ¯”ç‡æŸå¤±å‚æ•°
+    information_ratio_weight: float = 1.0    # ä¿¡æ¯æ¯”ç‡æƒé‡
+    opportunity_cost_weight: float = 0.1     # æœºä¼šæˆæœ¬æƒé‡
+    risk_adjustment_weight: float = 0.05     # é£é™©è°ƒæ•´æƒé‡
+    state_regularization_weight: float = 0.001  # çŠ¶æ€æ­£åˆ™åŒ–æƒé‡
+
+    # å…¶ä»–
+    tie_word_embeddings: bool = False  # æ˜¯å¦å…±äº«è¯åµŒå…¥æƒé‡
+
     def __post_init__(self):
-        """ÑéÖ¤ÅäÖÃ²ÎÊıµÄºÏÀíĞÔ"""
+        """éªŒè¯é…ç½®å‚æ•°çš„åˆç†æ€§"""
         assert self.d_model % self.n_heads == 0, "d_model must be divisible by n_heads"
         assert self.qk_rope_head_dim % 2 == 0, "qk_rope_head_dim must be even for RoPE"
         assert self.kv_lora_rank > 0, "kv_lora_rank must be positive"
         assert self.intermediate_size > 0, "intermediate_size must be positive"
         
-        # ¼ÆËã×ÜµÄ²éÑ¯/¼üÎ¬¶È
+        # è®¡ç®—æ€»çš„æŸ¥è¯¢/é”®ç»´åº¦
         self.qk_head_dim = self.qk_rope_head_dim + self.qk_nope_head_dim
-        
-        # ÑéÖ¤Î¬¶ÈÆ¥Åä
+
+        # éªŒè¯ç»´åº¦åŒ¹é…
         total_qk_dim = self.n_heads * self.qk_head_dim
         total_v_dim = self.n_heads * self.v_head_dim
         
@@ -73,13 +103,13 @@ class ModelArgs:
         print(f"  max_seq_len: {self.max_seq_len}")
 
 
-# Ô¤¶¨ÒåµÄÄ£ĞÍÅäÖÃ
+# é¢„å®šä¹‰çš„æ¨¡å‹é…ç½®
 class ModelConfigs:
-    """Ô¤¶¨ÒåµÄÄ£ĞÍÅäÖÃ"""
-    
+    """é¢„å®šä¹‰çš„æ¨¡å‹é…ç½®"""
+
     @staticmethod
     def tiny():
-        """Î¢ĞÍÄ£ĞÍÅäÖÃ£¬ÓÃÓÚ²âÊÔ"""
+        """å¾®å‹æ¨¡å‹é…ç½®ï¼Œç”¨äºæµ‹è¯•"""
         return ModelArgs(
             d_model=256,
             n_layers=4,
@@ -91,12 +121,13 @@ class ModelConfigs:
             intermediate_size=512,
             n_features=11,
             n_predictions=7,
+            n_trading_days=20,
             max_seq_len=512
         )
     
     @staticmethod
     def small():
-        """Ğ¡ĞÍÄ£ĞÍÅäÖÃ"""
+        """å°å‹æ¨¡å‹é…ç½®"""
         return ModelArgs(
             d_model=512,
             n_layers=8,
@@ -106,18 +137,17 @@ class ModelConfigs:
             qk_nope_head_dim=32,
             v_head_dim=64,
             intermediate_size=1024,
-            vocab_size=32000,
             max_seq_len=1024
         )
-    
+
     @staticmethod
     def base():
-        """»ù´¡Ä£ĞÍÅäÖÃ£¨Ä¬ÈÏ£©"""
+        """åŸºç¡€æ¨¡å‹é…ç½®ï¼ˆé»˜è®¤ï¼‰"""
         return ModelArgs()
-    
+
     @staticmethod
     def large():
-        """´óĞÍÄ£ĞÍÅäÖÃ"""
+        """å¤§å‹æ¨¡å‹é…ç½®"""
         return ModelArgs(
             d_model=2048,
             n_layers=32,
@@ -127,6 +157,5 @@ class ModelConfigs:
             qk_nope_head_dim=128,
             v_head_dim=128,
             intermediate_size=5632,
-            vocab_size=32000,
             max_seq_len=4096
         )

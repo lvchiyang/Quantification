@@ -18,21 +18,30 @@ class FinancialDataProcessor:
     时间, 开盘, 最高, 最低, 收盘, 涨幅, 振幅, 总手, 金额, 换手%, 成交次数
     """
     
-    def __init__(self, 
-                 sequence_length: int = 60,
+    def __init__(self,
+                 sequence_length: int = 180,  # 使用180天历史数据
                  prediction_horizon: int = 7,
-                 normalize: bool = True):
+                 trading_horizon: int = 20,   # 滑动20次预测
+                 normalize: bool = True,
+                 enable_trading_strategy: bool = True,
+                 sliding_window: bool = True):  # 启用滑动窗口模式
         """
         初始化数据处理器
-        
+
         Args:
-            sequence_length: 输入序列长度
-            prediction_horizon: 预测时间跨度
+            sequence_length: 输入序列长度（默认180天）
+            prediction_horizon: 价格预测时间跨度（7天）
+            trading_horizon: 交易策略时间跨度（20天滑动窗口）
             normalize: 是否标准化数据
+            enable_trading_strategy: 是否启用交易策略学习
+            sliding_window: 是否使用滑动窗口模式
         """
         self.sequence_length = sequence_length
         self.prediction_horizon = prediction_horizon
+        self.trading_horizon = trading_horizon
         self.normalize = normalize
+        self.enable_trading_strategy = enable_trading_strategy
+        self.sliding_window = sliding_window
         
         # 特征列名
         self.feature_columns = [
@@ -118,42 +127,152 @@ class FinancialDataProcessor:
         
         return df
     
-    def create_sequences(self, df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor]:
+    def create_sequences(self, df: pd.DataFrame) -> Tuple[torch.Tensor, ...]:
         """
         创建训练序列
-        
+
         Args:
             df: 处理后的DataFrame
-            
+
         Returns:
-            (features, targets) 张量对
+            如果启用交易策略: (features, price_targets, trading_prices)
+            否则: (features, price_targets)
         """
         features = []
-        targets = []
-        
+        price_targets = []
+        trading_prices = []
+
         # 确保数据按日期排序
         df = df.sort_values('date').reset_index(drop=True)
-        
+
         # 提取特征列
         feature_data = df[self.feature_columns].values
         close_prices = df['close'].values
-        
+
+        # 计算所需的最大长度
+        if self.enable_trading_strategy:
+            max_horizon = max(self.prediction_horizon, self.trading_horizon)
+        else:
+            max_horizon = self.prediction_horizon
+
         # 创建滑动窗口
-        for i in range(len(df) - self.sequence_length - self.prediction_horizon + 1):
+        for i in range(len(df) - self.sequence_length - max_horizon + 1):
             # 输入特征序列
             seq_features = feature_data[i:i + self.sequence_length]
-            
+
             # 目标价格（未来7个时间点的收盘价）
             target_prices = close_prices[
                 i + self.sequence_length:
                 i + self.sequence_length + self.prediction_horizon
             ]
-            
+
             features.append(seq_features)
-            targets.append(target_prices)
-        
-        return torch.FloatTensor(features), torch.FloatTensor(targets)
-    
+            price_targets.append(target_prices)
+
+            # 如果启用交易策略，添加交易时间段的价格
+            if self.enable_trading_strategy:
+                trading_period_prices = close_prices[
+                    i + self.sequence_length:
+                    i + self.sequence_length + self.trading_horizon
+                ]
+                trading_prices.append(trading_period_prices)
+
+        if self.enable_trading_strategy:
+            return (
+                torch.FloatTensor(features),
+                torch.FloatTensor(price_targets),
+                torch.FloatTensor(trading_prices)
+            )
+        else:
+            return torch.FloatTensor(features), torch.FloatTensor(price_targets)
+
+    def create_sliding_window_sequences(self, df: pd.DataFrame) -> Tuple[torch.Tensor, ...]:
+        """
+        创建滑动窗口训练序列
+
+        对于每个200天的序列，创建20个滑动窗口：
+        - 第1次：用第1-180天预测第181-187天价格，输出第181天仓位
+        - 第2次：用第2-181天预测第182-188天价格，输出第182天仓位
+        - ...
+        - 第20次：用第20-199天预测第200-206天价格，输出第200天仓位
+
+        Args:
+            df: 处理后的DataFrame (至少200+7天数据)
+
+        Returns:
+            (features_list, price_targets_list, position_targets, next_day_returns)
+        """
+        features_list = []
+        price_targets_list = []
+        position_targets = []  # 每天的仓位决策 (0-10)
+        next_day_returns = []  # 次日涨跌幅
+
+        # 确保数据按日期排序
+        df = df.sort_values('date').reset_index(drop=True)
+
+        # 提取特征列和价格
+        feature_data = df[self.feature_columns].values
+        close_prices = df['close'].values
+
+        # 计算涨跌幅
+        price_changes = np.diff(close_prices) / close_prices[:-1]  # 涨跌幅
+
+        # 需要至少 sequence_length + trading_horizon + prediction_horizon 天的数据
+        min_required_days = self.sequence_length + self.trading_horizon + self.prediction_horizon
+
+        # 为每个完整的序列创建滑动窗口
+        for start_idx in range(len(df) - min_required_days + 1):
+            # 为当前序列创建20个滑动窗口
+            sequence_features = []
+            sequence_price_targets = []
+            sequence_positions = []
+            sequence_returns = []
+
+            for slide in range(self.trading_horizon):  # 20次滑动
+                # 输入特征：180天历史数据
+                input_start = start_idx + slide
+                input_end = input_start + self.sequence_length
+                seq_features = feature_data[input_start:input_end]
+
+                # 价格预测目标：未来7天价格
+                price_start = input_end
+                price_end = price_start + self.prediction_horizon
+                if price_end <= len(close_prices):
+                    target_prices = close_prices[price_start:price_end]
+                else:
+                    # 如果超出范围，用最后的价格填充
+                    available_prices = close_prices[price_start:]
+                    target_prices = np.concatenate([
+                        available_prices,
+                        np.full(price_end - len(close_prices), close_prices[-1])
+                    ])
+
+                # 次日涨跌幅（用于计算仓位收益）
+                next_day_idx = input_end  # 预测日的第一天
+                if next_day_idx < len(price_changes):
+                    next_return = price_changes[next_day_idx]
+                else:
+                    next_return = 0.0  # 如果没有次日数据，收益为0
+
+                sequence_features.append(seq_features)
+                sequence_price_targets.append(target_prices)
+                sequence_returns.append(next_return)
+
+                # 仓位目标暂时设为0，在训练时会被忽略
+                sequence_positions.append(0.0)
+
+            features_list.append(np.array(sequence_features))
+            price_targets_list.append(np.array(sequence_price_targets))
+            position_targets.append(np.array(sequence_positions))
+            next_day_returns.append(np.array(sequence_returns))
+
+        return (
+            torch.FloatTensor(features_list),      # [n_sequences, 20, 180, n_features]
+            torch.FloatTensor(price_targets_list), # [n_sequences, 20, 7]
+            torch.FloatTensor(position_targets),   # [n_sequences, 20]
+            torch.FloatTensor(next_day_returns)    # [n_sequences, 20]
+        )
+
     def fit_normalizer(self, df: pd.DataFrame):
         """
         计算标准化参数
@@ -218,15 +337,16 @@ class FinancialDataProcessor:
         
         return predictions * std + mean
     
-    def process_file(self, file_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    def process_file(self, file_path: str) -> Tuple[torch.Tensor, ...]:
         """
         处理整个数据文件
-        
+
         Args:
             file_path: 数据文件路径
-            
+
         Returns:
-            (features, targets) 张量对
+            如果启用交易策略: (features, price_targets, trading_prices)
+            否则: (features, price_targets)
         """
         # 读取并解析数据
         data_list = []
@@ -254,14 +374,23 @@ class FinancialDataProcessor:
         df = self.normalize_features(df)
         
         # 创建序列
-        features, targets = self.create_sequences(df)
-        
-        print(f"✅ 数据处理完成:")
-        print(f"  - 总样本数: {len(features)}")
-        print(f"  - 特征维度: {features.shape}")
-        print(f"  - 目标维度: {targets.shape}")
-        
-        return features, targets
+        sequences = self.create_sequences(df)
+
+        if self.enable_trading_strategy:
+            features, price_targets, trading_prices = sequences
+            print(f"✅ 数据处理完成:")
+            print(f"  - 总样本数: {len(features)}")
+            print(f"  - 特征维度: {features.shape}")
+            print(f"  - 价格目标维度: {price_targets.shape}")
+            print(f"  - 交易价格维度: {trading_prices.shape}")
+            return features, price_targets, trading_prices
+        else:
+            features, price_targets = sequences
+            print(f"✅ 数据处理完成:")
+            print(f"  - 总样本数: {len(features)}")
+            print(f"  - 特征维度: {features.shape}")
+            print(f"  - 目标维度: {price_targets.shape}")
+            return features, price_targets
 
 
 def create_sample_data(n_days: int = 100) -> str:

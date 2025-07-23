@@ -19,54 +19,76 @@ from config import ModelArgs, ModelConfigs
 from transformer import FinancialTransformer
 from financial_data import FinancialDataProcessor, create_sample_data
 
-def create_sample_dataset() -> Tuple[torch.Tensor, torch.Tensor]:
+def create_sample_dataset() -> Tuple[torch.Tensor, ...]:
     """创建示例数据集"""
     print("🔄 创建示例金融数据...")
-    
+
     # 生成示例数据
     sample_data = create_sample_data(n_days=300)
-    
+
     # 保存到临时文件
     temp_file = "temp_financial_data.txt"
     with open(temp_file, 'w', encoding='utf-8') as f:
         f.write(sample_data)
-    
+
     # 处理数据
     processor = FinancialDataProcessor(
         sequence_length=60,
         prediction_horizon=7,
-        normalize=True
+        trading_horizon=20,
+        normalize=True,
+        enable_trading_strategy=True
     )
-    
-    features, targets = processor.process_file(temp_file)
-    
+
+    data_outputs = processor.process_file(temp_file)
+
     # 清理临时文件
     os.remove(temp_file)
-    
-    return features, targets, processor
+
+    return data_outputs + (processor,)
 
 def train_model():
     """训练金融预测模型"""
     print("🚀 开始训练金融量化模型...")
     
     # 1. 创建数据
-    features, targets, processor = create_sample_dataset()
-    
+    data_outputs = create_sample_dataset()
+
+    if len(data_outputs) == 4:  # 启用交易策略
+        features, price_targets, trading_prices, processor = data_outputs
+        enable_trading = True
+    else:  # 仅价格预测
+        features, price_targets, processor = data_outputs
+        trading_prices = None
+        enable_trading = False
+
     # 2. 数据分割
     train_size = int(0.8 * len(features))
     train_features = features[:train_size]
-    train_targets = targets[:train_size]
+    train_price_targets = price_targets[:train_size]
     val_features = features[train_size:]
-    val_targets = targets[train_size:]
-    
+    val_price_targets = price_targets[train_size:]
+
+    if enable_trading:
+        train_trading_prices = trading_prices[:train_size]
+        val_trading_prices = trading_prices[train_size:]
+    else:
+        train_trading_prices = None
+        val_trading_prices = None
+
     print(f"📊 数据分割:")
     print(f"  - 训练集: {len(train_features)} 样本")
     print(f"  - 验证集: {len(val_features)} 样本")
-    
+    print(f"  - 交易策略: {'启用' if enable_trading else '禁用'}")
+
     # 3. 创建数据加载器
-    train_dataset = TensorDataset(train_features, train_targets)
-    val_dataset = TensorDataset(val_features, val_targets)
-    
+    if enable_trading:
+        train_dataset = TensorDataset(train_features, train_price_targets, train_trading_prices)
+        val_dataset = TensorDataset(val_features, val_price_targets, val_trading_prices)
+    else:
+        train_dataset = TensorDataset(train_features, train_price_targets)
+        val_dataset = TensorDataset(val_features, val_price_targets)
+
     train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
     
@@ -107,26 +129,35 @@ def train_model():
         train_loss = 0.0
         train_batches = 0
         
-        for batch_features, batch_targets in train_loader:
-            batch_features = batch_features.to(device)
-            batch_targets = batch_targets.to(device)
-            
+        for batch_data in train_loader:
+            if enable_trading:
+                batch_features, batch_price_targets, batch_trading_prices = batch_data
+                batch_features = batch_features.to(device)
+                batch_price_targets = batch_price_targets.to(device)
+                batch_trading_prices = batch_trading_prices.to(device)
+            else:
+                batch_features, batch_price_targets = batch_data
+                batch_features = batch_features.to(device)
+                batch_price_targets = batch_price_targets.to(device)
+                batch_trading_prices = None
+
             optimizer.zero_grad()
-            
+
             outputs = model(
                 financial_data=batch_features,
-                target_prices=batch_targets,
+                target_prices=batch_price_targets,
+                future_prices=batch_trading_prices,
                 return_dict=True
             )
-            
+
             loss = outputs['loss']
             loss.backward()
-            
+
             # 梯度裁剪
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
+
             optimizer.step()
-            
+
             train_loss += loss.item()
             train_batches += 1
         
@@ -136,16 +167,25 @@ def train_model():
         val_batches = 0
         
         with torch.no_grad():
-            for batch_features, batch_targets in val_loader:
-                batch_features = batch_features.to(device)
-                batch_targets = batch_targets.to(device)
-                
+            for batch_data in val_loader:
+                if enable_trading:
+                    batch_features, batch_price_targets, batch_trading_prices = batch_data
+                    batch_features = batch_features.to(device)
+                    batch_price_targets = batch_price_targets.to(device)
+                    batch_trading_prices = batch_trading_prices.to(device)
+                else:
+                    batch_features, batch_price_targets = batch_data
+                    batch_features = batch_features.to(device)
+                    batch_price_targets = batch_price_targets.to(device)
+                    batch_trading_prices = None
+
                 outputs = model(
                     financial_data=batch_features,
-                    target_prices=batch_targets,
+                    target_prices=batch_price_targets,
+                    future_prices=batch_trading_prices,
                     return_dict=True
                 )
-                
+
                 val_loss += outputs['loss'].item()
                 val_batches += 1
         
@@ -172,29 +212,47 @@ def train_model():
     # 7. 测试预测
     print("\n🔮 测试预测功能...")
     model.eval()
-    
+
     # 使用验证集的第一个样本进行预测
     test_features = val_features[:1].to(device)  # 取一个样本
-    test_targets = val_targets[:1].to(device)
-    
+    test_price_targets = val_price_targets[:1].to(device)
+
     with torch.no_grad():
         predictions = model.predict(test_features, return_dict=True)
-        predicted_prices = predictions['predictions']
-        
+        predicted_prices = predictions['price_predictions']
+
         # 反标准化预测结果
         predicted_prices = processor.denormalize_predictions(predicted_prices)
-        actual_prices = processor.denormalize_predictions(test_targets)
-        
-        print(f"📊 预测结果对比:")
+        actual_prices = processor.denormalize_predictions(test_price_targets)
+
+        print(f"📊 价格预测结果对比:")
         print(f"  实际价格: {actual_prices[0].cpu().numpy()}")
         print(f"  预测价格: {predicted_prices[0].cpu().numpy()}")
-        
+
         # 计算误差
         mae = torch.mean(torch.abs(predicted_prices - actual_prices)).item()
         mse = torch.mean((predicted_prices - actual_prices) ** 2).item()
-        
+
         print(f"  平均绝对误差 (MAE): {mae:.4f}")
         print(f"  均方误差 (MSE): {mse:.4f}")
+
+        # 如果启用交易策略，显示交易预测
+        if enable_trading and 'trading_predictions' in predictions:
+            trading_predictions = predictions['trading_predictions']
+            print(f"\n📈 交易策略预测:")
+            print(f"  交易动作 (20天): {trading_predictions[0].cpu().numpy()}")
+
+            # 如果有交易价格数据，计算模拟收益
+            if val_trading_prices is not None:
+                test_trading_prices = val_trading_prices[:1].to(device)
+                test_trading_prices_denorm = processor.denormalize_predictions(test_trading_prices)
+
+                # 使用交易模拟器计算收益
+                if hasattr(model, 'trading_simulator') and model.trading_simulator is not None:
+                    returns = model.trading_simulator.simulate_trading(
+                        trading_predictions, test_trading_prices_denorm
+                    )
+                    print(f"  模拟收益率: {returns[0].item():.4f} ({returns[0].item()*100:.2f}%)")
 
 def main():
     """主函数"""
