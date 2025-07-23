@@ -13,24 +13,32 @@ from .utils import RMSNorm, precompute_freqs_cis, create_causal_mask, count_para
 from .feedforward import TransformerBlock
 
 
-class Transformer(nn.Module):
+class FinancialTransformer(nn.Module):
     """
-    Decoder-only Transformer 模型
+    金融量化 Transformer 模型
 
     架构特点：
+    - 处理金融时序数据（OHLC + 技术指标）
     - Pre-RMSNorm
     - MLA (Multi-Head Latent Attention)
     - RoPE (Rotary Position Embedding)
     - SwiGLU FFN
-    - Next Token Prediction
+    - 多时间点价格预测
     """
 
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args
 
-        # Token 嵌入
-        self.tok_embed = nn.Embedding(args.vocab_size, args.d_model)
+        # 金融数据特征数量
+        self.n_features = 11  # 开盘、最高、最低、收盘、涨幅、振幅、总手、金额、换手%、成交次数、时间编码
+        self.n_predictions = 7  # 预测7个时间点的价格
+
+        # 输入嵌入层：将金融特征映射到模型维度
+        self.feature_embed = nn.Linear(self.n_features, args.d_model)
+
+        # 特征归一化层
+        self.feature_norm = nn.LayerNorm(self.n_features)
 
         # Transformer 层
         self.layers = nn.ModuleList([
@@ -41,12 +49,13 @@ class Transformer(nn.Module):
         # 最终归一化层
         self.norm = RMSNorm(args.d_model, eps=args.layer_norm_eps)
 
-        # 语言模型头
-        if args.tie_word_embeddings:
-            # 共享输入输出嵌入权重
-            self.lm_head = None
-        else:
-            self.lm_head = nn.Linear(args.d_model, args.vocab_size, bias=False)
+        # 价格预测头
+        self.price_head = nn.Sequential(
+            nn.Linear(args.d_model, args.d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(args.dropout),
+            nn.Linear(args.d_model // 2, self.n_predictions)
+        )
 
         # 预计算 RoPE 频率
         self.register_buffer(
@@ -88,31 +97,11 @@ class Transformer(nn.Module):
         print(f"  Vocab size: {self.args.vocab_size}")
         print(f"  Max sequence length: {self.args.max_seq_len}")
 
-    def get_input_embeddings(self) -> nn.Embedding:
-        """获取输入嵌入层"""
-        return self.tok_embed
-
-    def set_input_embeddings(self, embeddings: nn.Embedding):
-        """设置输入嵌入层"""
-        self.tok_embed = embeddings
-
-    def get_output_embeddings(self) -> Optional[nn.Linear]:
-        """获取输出嵌入层"""
-        if self.args.tie_word_embeddings:
-            return None
-        return self.lm_head
-    
-    def set_output_embeddings(self, embeddings: Optional[nn.Linear]):
-        """设置输出嵌入层"""
-        if not self.args.tie_word_embeddings:
-            self.lm_head = embeddings
-
     def forward(
         self,
-        input_ids: torch.Tensor,
+        financial_data: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
-        use_cache: bool = False,
+        target_prices: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True
@@ -121,10 +110,9 @@ class Transformer(nn.Module):
         前向传播
 
         Args:
-            input_ids: 输入 token IDs [batch_size, seq_len]
+            financial_data: 金融数据 [batch_size, seq_len, n_features]
             attention_mask: 注意力掩码 [batch_size, seq_len]
-            labels: 标签 [batch_size, seq_len]，用于计算损失
-            use_cache: 是否使用缓存（暂未实现）
+            target_prices: 目标价格 [batch_size, n_predictions]
             output_attentions: 是否输出注意力权重
             output_hidden_states: 是否输出隐藏状态
             return_dict: 是否返回字典格式
@@ -132,11 +120,15 @@ class Transformer(nn.Module):
         Returns:
             模型输出
         """
-        batch_size, seq_len = input_ids.shape
-        device = input_ids.device
+        batch_size, seq_len, n_features = financial_data.shape
+        device = financial_data.device
 
-        # 1. Token 嵌入
-        hidden_states = self.tok_embed(input_ids)  # [batch_size, seq_len, d_model]
+        # 验证输入特征数量
+        assert n_features == self.n_features, f"期望{self.n_features}个特征，实际{n_features}个"
+
+        # 1. 特征归一化和嵌入
+        normalized_data = self.feature_norm(financial_data)  # [batch_size, seq_len, n_features]
+        hidden_states = self.feature_embed(normalized_data)  # [batch_size, seq_len, d_model]
 
         # 2. 获取 RoPE 频率
         freqs_cis = self.freqs_cis[:seq_len].to(device)
@@ -154,14 +146,14 @@ class Transformer(nn.Module):
 
         for layer in self.layers:
             if output_hidden_states:
-                all_hidden_states = all_hidden_states + (hidden_states,)
-
+                all_hidden_states = all_hidden_states + (hidden_states,)  # 保存每层的隐藏状态
+            
             hidden_states = layer(
-                hidden_states,
+                hidden_states,  # 输入当前层的隐藏状态
                 freqs_cis=freqs_cis,
                 attn_mask=causal_mask,
                 is_causal=True
-            )
+            )  # 输出更新后的隐藏状态
 
         # 5. 最终归一化
         hidden_states = self.norm(hidden_states)
@@ -169,37 +161,28 @@ class Transformer(nn.Module):
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
-        # 6. 语言模型头
-        if self.args.tie_word_embeddings:
-            # 使用输入嵌入的转置作为输出权重
-            logits = F.linear(hidden_states, self.tok_embed.weight)
-        else:
-            logits = self.lm_head(hidden_states)
+        # 6. 价格预测头
+        # 使用最后一个时间步的隐藏状态进行预测
+        last_hidden = hidden_states[:, -1, :]  # [batch_size, d_model]
+        price_predictions = self.price_head(last_hidden)  # [batch_size, n_predictions]
 
         # 7. 计算损失
         loss = None
-        if labels is not None:
-            # 移位标签：预测下一个 token
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-
-            # 计算交叉熵损失
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1)
-            )
+        if target_prices is not None:
+            # 使用均方误差损失进行价格预测
+            loss_fct = nn.MSELoss()
+            loss = loss_fct(price_predictions, target_prices)
 
         # 8. 返回结果
         if return_dict:
             return {
-                "logits": logits,
+                "predictions": price_predictions,
                 "loss": loss,
                 "hidden_states": all_hidden_states,
                 "attentions": all_attentions,
             }
         else:
-            outputs = (logits,)
+            outputs = (price_predictions,)
             if loss is not None:
                 outputs = (loss,) + outputs
             if output_hidden_states:
@@ -209,87 +192,27 @@ class Transformer(nn.Module):
             return outputs
     
     @torch.no_grad()
-    def generate(
+    def predict(
         self,
-        input_ids: torch.Tensor,
-        max_new_tokens: int = 50,
-        temperature: float = 1.0,
-        top_k: Optional[int] = None,
-        top_p: Optional[float] = None,
-        do_sample: bool = True,
-        pad_token_id: Optional[int] = None,
-        eos_token_id: Optional[int] = None
-    ) -> torch.Tensor:
+        financial_data: torch.Tensor,
+        return_dict: bool = True
+    ) -> Dict[str, torch.Tensor]:
         """
-        生成文本
+        预测未来价格
 
         Args:
-            input_ids: 输入 token IDs [batch_size, seq_len]
-            max_new_tokens: 最大生成 token 数
-            temperature: 温度参数
-            top_k: Top-K 采样
-            top_p: Top-P 采样
-            do_sample: 是否采样
-            pad_token_id: 填充 token ID
-            eos_token_id: 结束 token ID
+            financial_data: 金融数据 [batch_size, seq_len, n_features]
+            return_dict: 是否返回字典格式
 
         Returns:
-            生成的 token IDs [batch_size, seq_len + max_new_tokens]
+            价格预测结果 [batch_size, n_predictions]
         """
         self.eval()
 
-        batch_size = input_ids.shape[0]
-        device = input_ids.device
+        outputs = self.forward(
+            financial_data=financial_data,
+            return_dict=return_dict
+        )
 
-        # 生成循环
-        for _ in range(max_new_tokens):
-            # 前向传播
-            outputs = self.forward(input_ids, return_dict=True)
-            logits = outputs["logits"]
+        return outputs
 
-            # 获取最后一个位置的 logits
-            next_token_logits = logits[:, -1, :]  # [batch_size, vocab_size]
-
-            # 应用温度
-            if temperature != 1.0:
-                next_token_logits = next_token_logits / temperature
-
-            # Top-K 采样
-            if top_k is not None:
-                top_k = min(top_k, next_token_logits.size(-1))
-                top_k_logits, top_k_indices = torch.topk(next_token_logits, top_k)
-                next_token_logits = torch.full_like(next_token_logits, float('-inf'))
-                next_token_logits.scatter_(-1, top_k_indices, top_k_logits)
-
-            # Top-P 采样
-            if top_p is not None:
-                sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
-                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-
-                # 移除累积概率超过 top_p 的 token
-                sorted_indices_to_remove = cumulative_probs > top_p
-                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                sorted_indices_to_remove[..., 0] = 0
-
-                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                next_token_logits[indices_to_remove] = float('-inf')
-
-            # 采样或贪心选择
-            if do_sample:
-                probs = F.softmax(next_token_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-            else:
-                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-
-            # 拼接新 token
-            input_ids = torch.cat([input_ids, next_token], dim=-1)
-
-            # 检查是否遇到结束 token
-            if eos_token_id is not None and (next_token == eos_token_id).all():
-                break
-
-            # 检查序列长度限制
-            if input_ids.shape[1] >= self.args.max_seq_len:
-                break
-
-        return input_ids

@@ -64,17 +64,21 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Ten
     调整 freqs_cis 的形状以便与 x 进行广播
 
     Args:
-        freqs_cis: 复数频率 [seq_len, dim//2]
+        freqs_cis: 复数频率 [seq_len, head_dim//2]
         x: 输入张量 [batch_size, seq_len, n_heads, head_dim]
 
     Returns:
-        调整形状后的 freqs_cis [1, seq_len, 1, dim//2]
+        调整形状后的 freqs_cis [1, seq_len, 1, ..., 1, head_dim//2]
     """
-    # Check input shape
     ndim = x.ndim
-    assert 0 <= 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    assert ndim >= 3, "输入张量维度至少为3维"
+    assert freqs_cis.shape[0] == x.shape[1], f"序列长度不匹配: freqs_cis={freqs_cis.shape[0]}, x={x.shape[1]}"
+    assert freqs_cis.shape[1] == x.shape[-1] // 2, f"头维度不匹配: freqs_cis需要{x.shape[-1]//2}, 实际{freqs_cis.shape[1]}"
+
+    # 构建广播友好的形状: [1, seq_len, 1, ..., 1, head_dim//2]
+    shape = [1] * ndim
+    shape[1] = x.shape[1]  # 序列长度维度
+    shape[-1] = freqs_cis.shape[1]  # head_dim//2 维度
     return freqs_cis.view(*shape)
 
 

@@ -25,9 +25,10 @@ class ModelArgs:
     # FFN 参数
     intermediate_size: int = 2816 # SwiGLU 中间维度 ≈ 2/3 * 4h
     
-    # 词汇表和序列长度
-    vocab_size: int = 32000
-    max_seq_len: int = 2048
+    # 金融数据参数
+    n_features: int = 11          # 输入特征数量（开盘、最高、最低、收盘等）
+    n_predictions: int = 7        # 预测时间点数量
+    max_seq_len: int = 2048       # 最大序列长度
     
     # 正则化
     dropout: float = 0.0
@@ -67,7 +68,8 @@ class ModelArgs:
         print(f"  v_head_dim: {self.v_head_dim}")
         print(f"  kv_lora_rank: {self.kv_lora_rank}")
         print(f"  intermediate_size: {self.intermediate_size}")
-        print(f"  vocab_size: {self.vocab_size}")
+        print(f"  n_features: {self.n_features}")
+        print(f"  n_predictions: {self.n_predictions}")
         print(f"  max_seq_len: {self.max_seq_len}")
 
 
@@ -87,7 +89,8 @@ class ModelConfigs:
             qk_nope_head_dim=32,
             v_head_dim=64,
             intermediate_size=512,
-            vocab_size=32000,
+            n_features=11,
+            n_predictions=7,
             max_seq_len=512
         )
     
