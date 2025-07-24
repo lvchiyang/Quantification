@@ -12,10 +12,10 @@ import torch.nn as nn
 from transformers import AutoTokenizer
 
 from src.config import ModelArgs, ModelConfigs
-from src.utils import RMSNorm, precompute_freqs_cis, apply_rotary_emb
-from src.attention import MLA, MultiHeadAttention
-from src.feedforward import SwiGLU, TransformerBlock
-from src.transformer import Transformer
+from src.price_prediction.utils import RMSNorm, precompute_freqs_cis, apply_rotary_emb
+from src.price_prediction.attention import MLA, MultiHeadAttention
+from src.price_prediction.feedforward import SwiGLU, TransformerBlock
+from src.price_prediction.transformer import Transformer
 from src.model_utils import validate_model_architecture
 
 
@@ -221,7 +221,7 @@ class TestTransformer(unittest.TestCase):
     
     def test_parameter_count(self):
         """测试参数数量"""
-        from src.utils import count_parameters
+        from src.price_prediction.utils import count_parameters
         
         param_count = count_parameters(self.model)
         

@@ -73,6 +73,15 @@ class ModelArgs:
     risk_adjustment_weight: float = 0.05     # 风险调整权重
     state_regularization_weight: float = 0.001  # 状态正则化权重
 
+    # 策略网络损失参数
+    relative_return_weight: float = 1.0      # 相对基准收益权重
+    risk_cost_weight: float = 0.2            # 风险成本权重
+
+    # 策略网络损失参数
+    relative_return_weight: float = 1.0      # 相对基准收益权重
+    risk_cost_weight: float = 0.2            # 风险成本权重
+    opportunity_cost_weight: float = 0.1     # 机会成本权重（策略网络）
+
     # 其他
     tie_word_embeddings: bool = False  # 是否共享词嵌入权重
 

@@ -13,9 +13,9 @@ from transformers import AutoTokenizer
 import argparse
 
 from src.config import ModelArgs, ModelConfigs
-from src.transformer import Transformer
+from src.price_prediction.transformer import Transformer
 from src.model_utils import validate_model_architecture, save_model_info
-from src.utils import count_parameters
+from src.price_prediction.utils import count_parameters
 
 
 def demo_model_creation():
@@ -156,8 +156,8 @@ def demo_architecture_comparison():
     print("5. Architecture Components Demo")
     print("=" * 60)
     
-    from src.attention import MLA, MultiHeadAttention
-    from src.feedforward import SwiGLU
+    from src.price_prediction.attention import MLA, MultiHeadAttention
+    from src.price_prediction.feedforward import SwiGLU
     
     args = ModelConfigs.tiny()
     batch_size, seq_len = 2, 32

@@ -1,49 +1,49 @@
-# 🚀 金融量化 Transformer 模型
+# 🚀 金融量化交易系统
 
-基于 **MLA (Multi-Head Latent Attention)** 的金融时序预测模型，专门用于股票价格预测和交易策略学习。
+基于深度学习的两阶段金融量化交易系统，采用 **价格预测网络** + **策略网络** 的解耦架构，专门用于股票价格预测和交易策略学习。
 
 ## ✨ 核心特性
 
-### 🧠 先进的模型架构
+### 🏗️ 两阶段解耦架构
+- **价格预测网络**: 基于MLA Transformer的价格预测模型
+- **策略网络**: 基于GRU的交易策略学习网络
+- **完全解耦**: 两个网络独立训练，避免目标冲突
+- **专业化优化**: 每个网络专注自己的任务
+
+### 📈 价格预测网络
 - **MLA注意力机制**: 多头潜在注意力，压缩K/V降低计算复杂度
-- **RoPE位置编码**: 旋转位置编码，更好处理时序关系  
-- **SwiGLU前馈网络**: 高效的激活函数
-- **Pre-RMSNorm**: 稳定的归一化方式
+- **RoPE位置编码**: 旋转位置编码，更好处理时序关系
+- **11维金融特征**: OHLC + 技术指标 + 时间编码
+- **7天价格预测**: 预测未来7个时间点的收盘价
 
-### 📈 金融专用设计
-- **多特征输入**: 支持11维金融特征（OHLC + 技术指标）
-- **价格预测**: 预测未来7个时间点的收盘价
-- **交易策略**: 学习0-10档位的离散仓位决策
-- **风险控制**: 集成多种风险评估指标
-
-### 🔄 状态化训练 (NEW!)
-- **递归状态更新**: 20天滑动窗口的策略记忆
-- **内存高效**: 避免20倍内存开销的智能训练
-- **信息比率损失**: 自适应市场基准的策略评估
-- **市场分类**: 自动识别牛市/熊市/震荡市
+### 🧠 策略网络
+- **GRU记忆网络**: 20天递归状态更新的策略记忆
+- **离散仓位决策**: 0-10档位的可微分仓位预测
+- **智能损失函数**: 相对基准收益 + 风险成本 + 机会成本
+- **市场自适应**: 自动识别牛市/熊市/震荡市并调整策略
 
 ## 🏗️ 项目结构
 
 ```
 Quantification/
 ├── src/                          # 核心源码
-│   ├── transformer.py            # 主模型实现
-│   ├── config.py                 # 配置管理
-│   ├── attention.py              # MLA注意力机制
-│   ├── feedforward.py            # 前馈网络
-│   ├── market_classifier.py      # 市场状态分类器
-│   ├── information_ratio_loss.py # 信息比率损失函数
-│   ├── recurrent_trainer.py      # 递归训练器
-│   ├── financial_data.py         # 金融数据处理
-│   ├── discrete_position_methods.py # 离散化方法
-│   ├── sliding_window_predictor.py  # 滑动窗口预测器
-│   ├── trading_strategy.py       # 交易策略工具
-│   └── utils.py                  # 工具函数
+│   ├── price_prediction/         # 价格预测网络模块
+│   │   ├── price_transformer.py  # 价格预测Transformer
+│   │   ├── attention.py          # MLA注意力机制
+│   │   ├── feedforward.py        # SwiGLU前馈网络
+│   │   └── utils.py              # 工具函数
+│   ├── strategy_network/         # 策略网络模块
+│   │   ├── gru_strategy.py       # GRU策略网络
+│   │   ├── strategy_loss.py      # 策略损失函数
+│   │   └── strategy_trainer.py   # 策略训练器
+│   ├── config.py                 # 模型配置
+│   └── financial_data.py         # 金融数据处理
 ├── examples/                     # 示例代码
 ├── tests/                        # 测试文件
-├── train_stateful_strategy.py    # 状态化训练脚本
-├── test_stateful_model.py        # 功能测试脚本
-└── README.md                     # 本文件
+├── train.py                      # 两阶段训练入口
+├── train_price_network.py        # 价格网络训练
+├── train_strategy_network.py     # 策略网络训练
+└── test_stateful_model.py        # 功能测试脚本
 ```
 
 ## 🚀 快速开始
@@ -58,14 +58,19 @@ pip install torch einops transformers datasets numpy tqdm matplotlib pandas scik
 python test_stateful_model.py
 ```
 
-### 2. 基础训练
+### 2. 开始训练
 
 ```bash
-# 状态化训练方式 (推荐)
-python train_stateful_strategy.py
+# 完整两阶段训练
+python train.py
 
-# 传统训练方式
-python examples/train.py
+# 或分阶段训练
+python train.py price        # 只训练价格网络
+python train.py strategy     # 只训练策略网络
+
+# 或独立训练
+python train_price_network.py    # 第一阶段：价格预测
+python train_strategy_network.py # 第二阶段：策略学习
 ```
 
 ### 3. 模型配置
@@ -112,31 +117,31 @@ config.risk_adjustment_weight = 0.05
 - **价格预测**: 未来7个时间点的收盘价
 - **仓位决策**: 0-10档位的交易仓位
 
-## 🔄 状态化训练详解
+## 🔄 两阶段训练详解
 
 ### 核心思想
-传统方法每次预测都是独立的，而状态化训练让模型具备"记忆"：
+采用解耦的两阶段训练方法，避免价格预测和策略学习的目标冲突：
 
 ```python
-# 传统方式：每次独立预测
-for day in range(20):
-    position = model.predict(history_data[day])  # 独立决策
+# 第一阶段：价格预测网络训练
+price_network = PriceTransformer(config)
+price_loss = mse_loss(price_pred, price_target)  # 专注价格预测精度
 
-# 状态化方式：递归状态更新
-strategy_state = initial_state
-for day in range(20):
-    position, new_state = model.predict_with_state(history_data[day], strategy_state)
-    strategy_state = new_state  # 累积策略记忆
+# 第二阶段：策略网络训练（基于冻结的价格网络）
+strategy_network = GRUStrategyNetwork(config)
+price_features = price_network.extract_features(data)  # 冻结特征提取
+strategy_loss = -relative_return + risk_cost + opportunity_cost  # 专注策略收益
 ```
 
 ### 优势对比
 
-| 特性 | 传统训练 | 状态化训练 |
-|------|----------|------------|
-| **内存使用** | 1倍 | 1.2倍 (vs 20倍完整方案) |
-| **策略一致性** | 低 | 高 |
-| **长期规划** | 无 | 有 |
-| **市场适应** | 固定基准 | 自适应基准 |
+| 特性 | 耦合训练 | 两阶段解耦训练 |
+|------|----------|----------------|
+| **梯度传播** | 部分阻断 | 完全畅通 |
+| **目标冲突** | 严重 | 无冲突 |
+| **专业化程度** | 低 | 高 |
+| **调优难度** | 困难 | 简单 |
+| **训练效率** | 低 | 高 |
 
 ### 信息比率损失
 解决了传统方法在不同市场环境下评价不公平的问题：

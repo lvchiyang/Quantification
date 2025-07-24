@@ -14,7 +14,7 @@ import argparse
 import json
 
 from src.config import ModelArgs
-from src.transformer import Transformer
+from src.price_prediction.transformer import Transformer
 
 
 def load_model_from_checkpoint(checkpoint_path: str, device: str = "auto"):
