@@ -1,12 +1,18 @@
 """
 前馈网络实现
-包含 SwiGLU 和其他 FFN 变体
+
+专门实现各种前馈网络变体，包括：
+- SwiGLU：使用 SiLU 激活的门控线性单元
+- GeGLU：使用 GELU 激活的门控线性单元
+- StandardFFN：标准的两层前馈网络
+- MoEFFN：专家混合前馈网络
+
+这些前馈网络可以在 Transformer 层中使用，提供不同的非线性变换能力。
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
 
 from .config import PricePredictionConfig as ModelArgs
 
@@ -216,58 +222,4 @@ class FeedForward(SwiGLU):
     pass
 
 
-class TransformerBlock(nn.Module):
-    """
-    Transformer Block with Pre-RMSNorm
 
-    结构：
-    x -> RMSNorm -> MLA -> Add -> RMSNorm -> FFN -> Add
-    """
-
-    def __init__(self, args: ModelArgs, layer_idx: int = 0):
-        super().__init__()
-        self.args = args
-        self.layer_idx = layer_idx
-
-        # 导入必要的模块（避免循环导入）
-        from .attention import MLA
-        from .utils import RMSNorm
-
-        # 注意力层
-        self.attn_norm = RMSNorm(args.d_model, eps=args.layer_norm_eps)
-        self.attn = MLA(args)
-
-        # 前馈网络层
-        self.ffn_norm = RMSNorm(args.d_model, eps=args.layer_norm_eps)
-        self.ffn = SwiGLU(args)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        freqs_cis: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
-        is_causal: bool = True
-    ) -> torch.Tensor:
-        """
-        前向传播
-
-        Args:
-            x: 输入张量 [batch_size, seq_len, d_model]
-            freqs_cis: RoPE 频率复数
-            attn_mask: 注意力掩码
-            is_causal: 是否使用因果掩码
-
-        Returns:
-            输出张量 [batch_size, seq_len, d_model]
-        """
-        # Pre-RMSNorm + MLA + 残差连接
-        attn_input = self.attn_norm(x)
-        attn_output = self.attn(attn_input, freqs_cis, attn_mask, is_causal)
-        x = x + attn_output
-
-        # Pre-RMSNorm + FFN + 残差连接
-        ffn_input = self.ffn_norm(x)
-        ffn_output = self.ffn(ffn_input)
-        x = x + ffn_output
-
-        return x

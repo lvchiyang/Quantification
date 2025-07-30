@@ -32,10 +32,11 @@ class PricePredictionConfig:
     layer_norm_eps: float = 1e-6  # LayerNorm epsilon
     
     # 数据参数
-    n_features: int = 13          # 输入特征数
+    n_features: int = 20          # 输入特征数（修复：应该是20维）
     sequence_length: int = 180    # 输入序列长度
-    prediction_horizon: int = 7   # 预测时间跨度
+    prediction_horizon: int = 10  # 预测时间跨度（修复：应该是10个时间点）
     max_seq_len: int = 512        # 最大序列长度（用于RoPE）
+    rope_theta: float = 10000.0   # RoPE基础频率参数
     
     # 训练参数
     batch_size: int = 4           # 批次大小
@@ -45,11 +46,26 @@ class PricePredictionConfig:
     warmup_steps: int = 1000      # 预热步数
     
     # 损失函数参数
-    loss_type: str = "mse"        # 损失函数类型 ("mse", "mae", "huber")
+    loss_type: str = "mse"        # 基础损失函数类型 ("mse", "mae", "huber")
     huber_delta: float = 1.0      # Huber损失的delta参数
+
+    # 金融专用损失函数配置
+    use_financial_loss: bool = True      # 是否使用金融专用多损失函数
+    use_direction_loss: bool = True      # 是否启用方向损失
+    use_trend_loss: bool = True          # 是否启用趋势损失
+    use_temporal_weighting: bool = True  # 是否启用时间加权
+    use_ranking_loss: bool = False       # 是否启用排序损失
+    use_volatility_loss: bool = False    # 是否启用波动率损失
+
+    # 损失权重
+    base_weight: float = 1.0             # 基础损失权重
+    direction_weight: float = 0.3        # 方向损失权重
+    trend_weight: float = 0.2            # 趋势损失权重
+    ranking_weight: float = 0.1          # 排序损失权重
+    volatility_weight: float = 0.1       # 波动率损失权重
     
     # 数据处理参数
-    data_dir: str = "processed_data_2025-07-29"
+    data_dir: str = "processed_data_2025-07-30"
     large_value_transform: str = "relative_change"
     normalize_features: bool = True
     
@@ -148,7 +164,7 @@ class PricePredictionConfigs:
             d_model=512,
             n_layers=10,
             n_heads=8,
-            prediction_horizon=14,  # 预测未来14天
+            prediction_horizon=10,  # 修复：统一为10个时间点
             kv_lora_rank=256,
             intermediate_size=2048,
             loss_type="mae",  # 多步预测使用MAE

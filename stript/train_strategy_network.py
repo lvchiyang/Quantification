@@ -16,7 +16,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from strategy_network.config import StrategyNetworkConfigs
-from strategy_network.data_processor import StrategyNetworkDataProcessor
+from src.strategy_network.data_creater import StrategyNetworkDataProcessor
 from strategy_network.gru_strategy import GRUStrategyNetwork
 from strategy_network.strategy_loss import StrategyLoss
 

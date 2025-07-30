@@ -1,4 +1,7 @@
-
+.gitignore
 processed_data_*
 *csv
 *txt
+*xls
+THSoriginalData
+test

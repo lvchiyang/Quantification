@@ -5,66 +5,75 @@
 
 import sys
 import os
+import glob
+from datetime import datetime
 sys.path.append('src')
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from price_prediction.config import PricePredictionConfigs
-from price_prediction.data_processor import PricePredictionDataProcessor
 from price_prediction.price_transformer import PriceTransformer
+from price_prediction.financial_losses import FinancialMultiLoss
+# 使用序列处理器
+sys.path.append('.')
+from sequence_processor import PriceDataset
 
-def create_dataloader(features, targets, batch_size, shuffle=True):
-    """创建数据加载器"""
-    dataset = TensorDataset(features, targets)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+
+def find_latest_data_dir():
+    """查找最新的数据目录"""
+    pattern = "processed_data_*"
+    data_dirs = glob.glob(pattern)
+
+    if not data_dirs:
+        # 如果没找到，尝试创建今天的目录名
+        today = datetime.now().strftime("%Y-%m-%d")
+        return f"processed_data_{today}"
+
+    # 返回最新的目录
+    return sorted(data_dirs)[-1]
+
+
 
 def train_price_prediction_model(config):
     """训练价格预测模型"""
     print("🚀 开始训练价格预测模型")
     print("="*50)
-    
-    # 1. 创建数据处理器
-    print("📊 加载数据...")
-    data_processor = PricePredictionDataProcessor(
-        data_dir=config.data_dir,
-        sequence_length=config.sequence_length,
-        prediction_horizon=config.prediction_horizon,
-        large_value_transform=config.large_value_transform
-    )
-    
-    # 2. 加载所有股票数据
-    stock_data = data_processor.load_all_stocks_for_price_prediction()
-    
-    if not stock_data:
+
+    # 1. 查找数据目录
+    print("📊 查找数据目录...")
+    data_dir = find_latest_data_dir()
+    data_path = os.path.join(data_dir, "股票数据")
+
+    print(f"使用数据目录: {data_dir}")
+
+    if not os.path.exists(data_path):
+        print(f"❌ 数据目录不存在: {data_path}")
+        print("请确保数据已经处理完成！")
+        return None
+
+    # 2. 使用序列处理器创建数据集
+    dataset = PriceDataset(data_path, sequence_length=config.sequence_length)
+
+    if len(dataset) == 0:
         print("❌ 没有加载到任何数据")
         return None
-    
-    # 3. 合并所有股票数据
-    all_features = []
-    all_targets = []
-    
-    for stock_name, (features, targets) in stock_data.items():
-        all_features.append(features)
-        all_targets.append(targets)
-        print(f"  {stock_name}: {features.shape[0]} 个序列")
-    
-    # 合并数据
-    train_features = torch.cat(all_features, dim=0)
-    train_targets = torch.cat(all_targets, dim=0)
-    
+
     print(f"\n📈 训练数据统计:")
-    print(f"  特征形状: {train_features.shape}")
-    print(f"  目标形状: {train_targets.shape}")
-    print(f"  总序列数: {len(train_features)}")
-    
-    # 4. 创建数据加载器
-    train_loader = create_dataloader(train_features, train_targets, config.batch_size)
+    print(f"  总序列数: {len(dataset)}")
+
+    # 检查数据形状
+    sample_input, sample_target = dataset[0]
+    print(f"  输入形状: {sample_input.shape}")  # [180, 20]
+    print(f"  目标形状: {sample_target.shape}")  # [10]
+
+    # 3. 创建数据加载器
+    train_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
     
     # 5. 创建模型
     print(f"\n🏗️  创建模型...")
@@ -82,15 +91,58 @@ def train_price_prediction_model(config):
         lr=config.learning_rate,
         weight_decay=config.weight_decay
     )
-    
-    if config.loss_type == "mse":
-        criterion = nn.MSELoss()
-    elif config.loss_type == "mae":
-        criterion = nn.L1Loss()
-    elif config.loss_type == "huber":
-        criterion = nn.HuberLoss(delta=config.huber_delta)
+
+    # 根据配置选择损失函数
+    if config.use_financial_loss:
+        # 使用金融专用多损失函数组合
+        print(f"🎯 使用金融专用多损失函数:")
+        print(f"  基础损失类型: {config.loss_type}")
+
+        criterion = FinancialMultiLoss(
+            base_loss_type=config.loss_type,
+            use_direction_loss=config.use_direction_loss,
+            use_trend_loss=config.use_trend_loss,
+            use_temporal_weighting=config.use_temporal_weighting,
+            use_ranking_loss=config.use_ranking_loss,
+            use_volatility_loss=config.use_volatility_loss,
+
+            # 损失权重配置
+            base_weight=config.base_weight,
+            direction_weight=config.direction_weight,
+            trend_weight=config.trend_weight,
+            ranking_weight=config.ranking_weight,
+            volatility_weight=config.volatility_weight
+        )
+
+        enabled_components = []
+        if config.use_direction_loss:
+            enabled_components.append(f"方向损失({config.direction_weight})")
+        if config.use_trend_loss:
+            enabled_components.append(f"趋势损失({config.trend_weight})")
+        if config.use_temporal_weighting:
+            enabled_components.append("时间加权")
+        if config.use_ranking_loss:
+            enabled_components.append(f"排序损失({config.ranking_weight})")
+        if config.use_volatility_loss:
+            enabled_components.append(f"波动率损失({config.volatility_weight})")
+
+        print(f"  启用组件: {' + '.join(enabled_components)}")
+        use_multi_loss = True
+
     else:
-        criterion = nn.MSELoss()
+        # 使用传统单一损失函数
+        print(f"🎯 使用传统损失函数: {config.loss_type}")
+
+        if config.loss_type == "mse":
+            criterion = nn.MSELoss()
+        elif config.loss_type == "mae":
+            criterion = nn.L1Loss()
+        elif config.loss_type == "huber":
+            criterion = nn.HuberLoss(delta=config.huber_delta)
+        else:
+            criterion = nn.MSELoss()
+
+        use_multi_loss = False
     
     # 7. 训练循环
     print(f"\n🎯 开始训练...")
@@ -104,7 +156,7 @@ def train_price_prediction_model(config):
         
         # 训练一个epoch
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.max_epochs}")
-        for batch_idx, (features, targets) in enumerate(pbar):
+        for features, targets in pbar:
             optimizer.zero_grad()
             
             # 前向传播
@@ -112,24 +164,42 @@ def train_price_prediction_model(config):
             price_predictions = outputs['price_predictions']
             
             # 计算损失
-            loss = criterion(price_predictions, targets)
-            
+            if use_multi_loss:
+                # 金融专用多损失函数
+                loss_dict = criterion(price_predictions, targets)
+                total_loss = loss_dict['loss']  # 主损失用于反向传播
+
+                # 显示详细损失信息
+                pbar.set_postfix({
+                    'total': f'{total_loss.item():.4f}',
+                    'base': f'{loss_dict["base_loss"]:.4f}',
+                    'dir': f'{loss_dict["direction_loss"]:.4f}',
+                    'trend': f'{loss_dict["trend_loss"]:.4f}',
+                    'dir_acc': f'{loss_dict["direction_accuracy"]:.2%}'
+                })
+            else:
+                # 传统单一损失函数
+                total_loss = criterion(price_predictions, targets)
+
+                # 显示简单损失信息
+                pbar.set_postfix({'loss': f'{total_loss.item():.6f}'})
+
             # 反向传播
-            loss.backward()
-            
+            total_loss.backward()
+
             # 梯度裁剪
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
+
             optimizer.step()
-            
-            epoch_losses.append(loss.item())
-            pbar.set_postfix({'loss': f'{loss.item():.6f}'})
+
+            # 记录损失
+            epoch_losses.append(total_loss.item())
         
         # 计算平均损失
         avg_loss = np.mean(epoch_losses)
         train_losses.append(avg_loss)
         
-        print(f"Epoch {epoch+1}: 平均损失 = {avg_loss:.6f}")
+        print(f"Epoch {epoch+1}: 平均总损失 = {avg_loss:.6f}")
         
         # 早停检查
         if avg_loss < best_loss:
@@ -203,11 +273,14 @@ def main():
     
     # 开始训练
     try:
-        model, losses = train_price_prediction_model(config)
-        
-        if model is not None:
+        result = train_price_prediction_model(config)
+
+        if result is not None:
+            model, train_losses = result
             print("\n🎉 价格预测模型训练成功!")
             print("现在可以使用训练好的模型进行价格预测了。")
+        else:
+            print("\n❌ 训练失败，请检查数据和配置")
             
     except KeyboardInterrupt:
         print("\n⏹️  训练被用户中断")
