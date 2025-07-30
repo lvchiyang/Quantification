@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
-from ..config import ModelArgs
+from .config import PricePredictionConfig as ModelArgs
 
 
 class SwiGLU(nn.Module):

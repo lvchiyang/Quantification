@@ -76,17 +76,22 @@ compression_ratio = 4     # 压缩比例
 ```python
 class MLA(nn.Module):
     def __init__(self, args):
+        # 计算查询/键头维度（使用完整的d_model/n_heads）
+        self.qk_head_dim = args.d_model // args.n_heads
+
+        # 确保头维度是偶数（RoPE要求）
+        assert self.qk_head_dim % 2 == 0, "qk_head_dim must be even for RoPE"
+
         # K/V 潜在投影压缩
         self.kv_compress = nn.Linear(args.d_model, self.kv_lora_rank, bias=False)
         self.kv_norm = RMSNorm(self.kv_lora_rank, eps=args.layer_norm_eps)
-        
+
         # 从压缩表示恢复 K/V
         self.k_up = nn.Linear(self.kv_lora_rank, self.n_heads * self.qk_head_dim, bias=False)
         self.v_up = nn.Linear(self.kv_lora_rank, self.n_heads * self.v_dim, bias=False)
-        
-        # 查询投影，分为 RoPE 和非 RoPE 部分
-        self.q_nope = nn.Linear(args.d_model, self.n_heads * self.qk_nope_dim, bias=False)
-        self.q_rope = nn.Linear(args.d_model, self.n_heads * self.qk_rope_dim, bias=False)
+
+        # 查询投影（完整RoPE）
+        self.q_proj = nn.Linear(args.d_model, self.n_heads * self.qk_head_dim, bias=False)
 ```
 
 ### 2. RoPE (Rotary Position Embedding)

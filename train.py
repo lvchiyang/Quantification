@@ -21,7 +21,7 @@ def run_two_stage_training():
 
     try:
         result = subprocess.run([
-            sys.executable, "train_price_network.py"
+            sys.executable, "train_price_prediction_only.py"
         ], check=True, capture_output=False)
         print("✅ 价格预测网络训练完成!")
     except subprocess.CalledProcessError as e:
@@ -36,7 +36,7 @@ def run_two_stage_training():
 
     try:
         result = subprocess.run([
-            sys.executable, "train_strategy_network.py"
+            sys.executable, "train_strategy_network_only.py"
         ], check=True, capture_output=False)
         print("✅ 策略网络训练完成!")
     except subprocess.CalledProcessError as e:
@@ -46,8 +46,8 @@ def run_two_stage_training():
     print("\n" + "=" * 60)
     print("🎉 两阶段训练全部完成!")
     print("📁 生成的模型文件:")
-    print("  - best_price_network.pth    (价格预测网络)")
-    print("  - best_strategy_network.pth (策略网络)")
+    print("  - checkpoints/price_prediction/best_price_model.pth    (价格预测网络)")
+    print("  - checkpoints/strategy_network/best_strategy_model.pth (策略网络)")
     print("=" * 60)
 
     return True
