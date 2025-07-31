@@ -2,7 +2,7 @@
 
 专门为金融时序预测 Transformer 模型设计的配置系统，提供灵活的参数调整和预定义配置。
 
-## ? 目录
+##  目录
 
 - [配置概述](#配置概述)
 - [核心参数](#核心参数)
@@ -12,7 +12,7 @@
 
 ---
 
-## ? 配置概述
+##  配置概述
 
 ### 设计理念
 
@@ -44,7 +44,7 @@ class PricePredictionConfig:
 
 ---
 
-## ?? 核心参数
+##  核心参数
 
 ### 模型架构参数
 
@@ -101,7 +101,7 @@ class PricePredictionConfig:
 
 ---
 
-## ?? 预定义配置
+##  预定义配置
 
 ### 1. Tiny 配置
 
@@ -190,7 +190,7 @@ config = PricePredictionConfigs.for_multi_step_prediction()
 
 ---
 
-## ? 性能对比
+##  性能对比
 
 ### 训练性能对比
 
@@ -212,7 +212,7 @@ config = PricePredictionConfigs.for_multi_step_prediction()
 
 ---
 
-## ? 参数调优指南
+##  参数调优指南
 
 ### 1. 模型容量调优
 
@@ -284,7 +284,7 @@ config.batch_size = 2
 
 ---
 
-## ? 使用方法
+##  使用方法
 
 ### 基础使用
 
@@ -351,14 +351,14 @@ except AssertionError as e:
 
 # 正确的配置
 config = PricePredictionConfig(
-    d_model=512,  # 512 % 8 = 0 ?
+    d_model=512,  # 512 % 8 = 0 
     n_heads=8
 )
 ```
 
 ---
 
-## ? 最佳实践
+##  最佳实践
 
 ### 1. 配置选择策略
 
@@ -460,7 +460,7 @@ config = get_adaptive_config()
 
 ---
 
-## ? 调试和监控
+##  调试和监控
 
 ### 配置信息打印
 
@@ -510,7 +510,7 @@ print_config_summary(config)
 
 ---
 
-## ? 相关文件
+##  相关文件
 
 - `src/price_prediction/config.py` - 配置类实现
 - `src/price_prediction/price_transformer.py` - 主模型实现

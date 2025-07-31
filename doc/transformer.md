@@ -148,38 +148,226 @@ class MultiHeadLatentAttention(nn.Module):
 
 ### 2. RoPE (Rotary Position Embedding)
 
-**位置编码原理**：
+RoPE是本模型的核心位置编码方案，在每个注意力层中对Q和K向量进行旋转变换。
+
+**重要说明**：RoPE在Transformer的注意力层中实现，而不是在嵌入层。这种设计有以下优势：
+- **职责分离**：嵌入层专注于特征表示，注意力层处理位置信息
+- **精确控制**：每层都能重新计算位置关系，学习不同粒度的位置模式
+- **特征纯净**：保持嵌入特征的原始表示能力，不被位置信息污染
+
+#### 2.1 工作原理
+
+RoPE通过复数旋转的方式为向量添加位置信息：
 
 ```python
 def precompute_freqs_cis(dim: int, end: int, theta: float = 1e4):
-    # 计算频率
+    """
+    预计算RoPE的频率复数
+
+    Args:
+        dim: RoPE维度（必须是偶数）
+        end: 最大序列长度
+        theta: 基础频率参数
+
+    Returns:
+        频率复数张量 [end, dim//2]
+    """
+    # 计算频率：θ_i = θ^(-2i/d) for i = 0, 1, ..., d/2-1
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    
-    # 计算位置索引
+
+    # 生成位置索引：m = 0, 1, 2, ..., end-1
     t = torch.arange(end, device=freqs.device, dtype=freqs.dtype)
+
+    # 计算每个位置和频率的外积：m * θ_i
     freqs = torch.outer(t, freqs).float()
-    
-    # 转换为复数形式
+
+    # 转换为复数形式：e^(i * m * θ_i) = cos(m*θ_i) + i*sin(m*θ_i)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+
     return freqs_cis
 
 def apply_rotary_emb(xq, xk, freqs_cis):
-    # 重塑为复数
+    """
+    对查询和键张量应用旋转位置编码
+
+    Args:
+        xq: 查询张量 [batch_size, seq_len, n_heads, head_dim]
+        xk: 键张量 [batch_size, seq_len, n_heads, head_dim]
+        freqs_cis: 频率复数 [seq_len, head_dim//2]
+
+    Returns:
+        应用RoPE后的(xq, xk)
+    """
+    # 将实数向量重塑为复数表示 [batch, seq_len, n_heads, head_dim//2]
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    
-    # 应用旋转
+
+    # 调整freqs_cis的形状以匹配输入张量
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
+
+    # 应用旋转：复数乘法实现旋转变换
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    
+
     return xq_out.type_as(xq), xk_out.type_as(xk)
+
+def reshape_for_broadcast(freqs_cis, x):
+    """调整频率复数的形状以匹配输入张量"""
+    ndim = x.ndim
+    assert 0 <= 1 < ndim
+    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    return freqs_cis.view(*shape)
 ```
 
-**RoPE 优势**：
-- 相对位置编码，适合长序列
-- 旋转不变性，保持向量长度
-- 外推能力强，可处理训练时未见过的序列长度
+#### 2.2 数学原理
+
+RoPE的核心思想是将位置信息编码为旋转矩阵：
+
+1. **复数表示**：将向量的相邻两个维度组合成复数
+2. **旋转变换**：通过复数乘法实现旋转
+3. **相对位置**：两个位置间的相对距离决定了它们的相对旋转角度
+
+对于位置m和n的两个向量，它们的内积具有相对位置不变性：
+```
+<RoPE(q_m), RoPE(k_n)> = <q_m, k_n> * e^(i(m-n)θ)
+```
+
+#### 2.3 在注意力中的应用
+
+```python
+class MultiHeadLatentAttention(nn.Module):
+    def forward(self, x, freqs_cis):
+        # 1. 计算Q, K, V
+        q = self.q_proj(x)  # [batch, seq_len, n_heads * head_dim]
+
+        # 通过潜在压缩计算K, V
+        kv_compressed = self.kv_compress(x)  # [batch, seq_len, kv_lora_rank]
+        kv_compressed = self.kv_norm(kv_compressed)
+
+        k = self.k_up(kv_compressed)  # [batch, seq_len, n_heads * head_dim]
+        v = self.v_up(kv_compressed)  # [batch, seq_len, n_heads * v_dim]
+
+        # 2. 重塑为多头格式
+        q = q.view(batch_size, seq_len, self.n_heads, self.qk_head_dim)
+        k = k.view(batch_size, seq_len, self.n_heads, self.qk_head_dim)
+        v = v.view(batch_size, seq_len, self.n_heads, self.v_dim)
+
+        # 3. 应用RoPE（只对Q和K，V不变）
+        q, k = apply_rotary_emb(q, k, freqs_cis)
+
+        # 4. 计算注意力
+        attn_output = scaled_dot_product_attention(q, k, v)
+
+        return attn_output
+```
+
+#### 2.4 RoPE优势
+
+**相比传统位置编码的优势**：
+
+1. **相对位置编码**：
+   - 关注token间的相对距离而非绝对位置
+   - 更适合时间序列：昨天vs今天比第179天vs第180天更有意义
+
+2. **外推能力强**：
+   - 能处理训练时未见过的序列长度
+   - 对金融数据的长序列处理很重要
+
+3. **旋转不变性**：
+   - 保持向量的几何性质和长度
+   - 不会改变特征的原始表示能力
+
+4. **计算效率**：
+   - 通过复数乘法实现，计算高效
+   - 可以预计算频率复数，减少运行时开销
+
+**适合金融时序的原因**：
+
+1. **时间相对性**：金融数据中相对时间关系比绝对时间更重要
+2. **长序列支持**：180天的序列长度，RoPE能很好处理
+3. **模式识别**：相对位置编码有助于识别重复的时间模式
+
+#### 2.5 配置参数
+
+```python
+# RoPE相关配置
+rope_theta: float = 10000.0    # 基础频率参数，控制旋转频率
+max_seq_len: int = 512         # 支持的最大序列长度
+```
+
+**参数详解**：
+
+- `rope_theta`：基础频率参数，影响位置编码的频率分布
+  - **数学含义**：θ_i = θ^(-2i/d)，θ越大，高维度的频率越低
+  - **效果**：越大则低频分量越多，位置信息衰减更慢，适合长序列
+  - **金融应用**：10000.0适合180天序列，能捕捉长期趋势
+  - **调优建议**：序列越长，θ应该越大
+
+- `max_seq_len`：预计算频率复数的最大长度
+  - **作用**：预先计算所有位置的旋转复数，提高运行效率
+  - **设置**：应该大于等于实际使用的最大序列长度
+  - **内存影响**：更大的值会占用更多内存
+
+#### 2.6 实际应用示例
+
+```python
+# 在PriceTransformer中的使用
+class PriceTransformer(nn.Module):
+    def __init__(self, args):
+        # 预计算RoPE频率
+        self.freqs_cis = precompute_freqs_cis(
+            dim=args.d_model // args.n_heads,  # 每个头的维度
+            end=args.max_seq_len,              # 最大序列长度
+            theta=args.rope_theta               # 基础频率参数
+        )
+
+    def forward(self, x):
+        # 获取当前序列长度对应的频率
+        seq_len = x.size(1)
+        freqs_cis = self.freqs_cis[:seq_len]
+
+        # 在每个Transformer层中应用
+        for layer in self.layers:
+            x = layer(x, freqs_cis)
+
+        return x
+```
+
+#### 2.7 与传统位置编码对比
+
+| 特性 | RoPE | 传统位置编码 |
+|------|------|-------------|
+| **编码方式** | 旋转变换 | 直接相加 |
+| **位置类型** | 相对位置 | 绝对位置 |
+| **应用位置** | 注意力层 | 嵌入层 |
+| **外推能力** | 强 | 弱 |
+| **计算开销** | 每层计算 | 一次性 |
+| **适用场景** | 长序列、时间序列 | 通用场景 |
+
+**为什么选择RoPE**：
+
+1. **金融时序特性**：相对时间关系比绝对时间更重要
+2. **长序列处理**：180天序列，RoPE外推能力强
+3. **模式识别**：有助于识别周期性和趋势性模式
+4. **现代架构**：与MLA等现代注意力机制配合更好
+
+#### 2.8 使用注意事项
+
+**必要条件**：
+1. **头维度必须是偶数**：RoPE需要将向量维度成对组合为复数
+2. **预计算频率**：需要预先计算所有位置的旋转复数
+3. **只对Q和K应用**：V向量不应用RoPE，保持原始特征表示
+
+**常见问题**：
+1. **维度不匹配**：确保 `d_model // n_heads` 是偶数
+2. **序列长度超限**：输入序列长度不能超过 `max_seq_len`
+3. **设备不匹配**：确保频率复数与输入张量在同一设备上
+
+**调优建议**：
+1. **theta参数**：根据序列长度调整，长序列使用更大的theta
+2. **缓存频率**：预计算并缓存频率复数，避免重复计算
+3. **内存优化**：合理设置max_seq_len，平衡性能和内存使用
 
 ### 3. SwiGLU 前馈网络
 

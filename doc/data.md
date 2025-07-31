@@ -68,20 +68,82 @@ graph TD
 ### 最终特征结构
 **模型输入特征**（20维）：
 ```python
-# 在 src/price_prediction/data_processor.py 中实现
+# 在 src/price_prediction/data_cteater.py 中实现
 feature_columns = [
-    'month', 'day', 'weekday',                    # 时间特征 (3维)
-    'price_median', 'open_rel', 'high_rel',       # 价格基准 + OHLC相对值 (5维)
-    'low_rel', 'close_rel',
-    'change_pct', 'amplitude',                    # 价格变化 (2维)
-    'volume_log', 'volume_rel',                   # 成交量：对数 + 相对值 (2维)
-    'amount_log', 'amount_rel',                   # 金额：对数 + 相对值 (2维)
-    'turnover_rate', 'trade_count',               # 市场活跃度 (2维)
-    'big_order_activity', 'chip_concentration','market_sentiment', 'price_volume_sync'  # 金融特征 (4维)
+    '月', '日', '星期',                           # 时间特征 (3维)
+    'open_rel', 'high_rel', 'low_rel', 'close_rel',  # 价格特征 (4维)
+    '涨幅', '振幅',                               # 价格变化 (2维)
+    'volume_rel', 'volume_log',                   # 成交量：相对值 + 对数值 (2维)
+    'amount_rel', 'amount_log',                   # 金额：相对值 + 对数值 (2维)
+    '换手%', '成交次数',                          # 市场活跃度 (2维)
+    'big_order_activity', 'chip_concentration',   # 金融特征1,2 (2维)
+    'market_sentiment', 'price_volume_sync'       # 金融特征3,4 (2维)
 ]
 
-# 预测目标：未来多个时间点的close_rel
+# 预测目标：未来多个时间点的价格
 prediction_targets = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30]  # 未来第N天
+```
+
+---
+
+## ? 预测目标配置
+
+### 两种预测方式
+
+系统支持两种可配置的预测方式：
+
+#### 1. 绝对价格预测 (`prediction_target="absolute"`)
+
+直接预测未来10个交易日的实际收盘价格：
+
+```python
+# 配置
+config.prediction_target = "absolute"
+
+# 目标值：实际价格
+target_prices = [102.5, 103.2, 101.8, 104.1, ...]  # 实际收盘价
+
+# 优势：
+# - 直观易懂，直接预测价格
+# - 适合价格水平相对稳定的股票
+# - 损失函数直接优化价格精度
+```
+
+#### 2. 相对价格预测 (`prediction_target="relative"`)
+
+预测相对于序列基准的比值，推理时自动转换为实际价格：
+
+```python
+# 配置
+config.prediction_target = "relative"
+
+# 目标值：相对于序列中位数的比值
+sequence_median = 100.0
+target_prices = [1.025, 1.032, 1.018, 1.041, ...]  # 相对值
+
+# 推理时自动转换
+absolute_prices = target_prices * sequence_median
+# [102.5, 103.2, 101.8, 104.1, ...]
+
+# 优势：
+# - 适应不同价格水平的股票
+# - 模型学习相对变化模式
+# - 更好的泛化能力
+```
+
+### 配置方法
+
+```python
+from src.price_prediction.config import PricePredictionConfigs
+
+# 绝对价格预测配置
+config_abs = PricePredictionConfigs.for_absolute_prediction()
+
+# 相对价格预测配置
+config_rel = PricePredictionConfigs.for_relative_prediction()
+
+# 自定义配置
+config = PricePredictionConfig(prediction_target="absolute")  # 或 "relative"
 ```
 
 ---
@@ -182,25 +244,28 @@ def process_sequence_price_features(sequence_df):
 def process_sequence_volume_amount(sequence_df, col):
     """
     对180天序列的成交量/金额进行处理
-    方法1：序列内中位数基准 + 相对值
-    方法2：序列内相对变化率
+    方法1：序列内中位数基准 + 相对值（让模型学习相对变化）
+    方法2：对数值（让模型学习绝对水平）
     """
     values = pd.to_numeric(sequence_df[col], errors='coerce').fillna(0)
 
-    # 方法1：序列内中位数基准
+    # 方法1：序列内中位数基准 - 相对值
     sequence_median = values.median()
     if sequence_median == 0:
         sequence_median = 1.0
     relative_values = values / sequence_median
 
-    # 方法2：相对变化率（20日滚动均值）
-    rolling_mean = values.rolling(window=20, min_periods=1).mean()
-    rolling_mean = rolling_mean.fillna(method='bfill').fillna(1.0)
-    rolling_mean = rolling_mean.replace(0, 1.0)
-    relative_change = (values - rolling_mean) / rolling_mean * 100
+    # 方法2：对数值 - 绝对水平信息
+    # 使用 log1p 避免 log(0) 问题
+    log_values = np.log1p(values)  # log(1 + x)
 
-    return relative_values, relative_change.fillna(0.0)
+    return relative_values, log_values
 ```
+
+**设计理念**：
+- **相对值**：提供序列内的相对水平，让Transformer学习相对变化模式
+- **对数值**：提供绝对水平信息，捕捉成交量/金额的数量级差异
+- **不手动计算变化率**：让模型通过注意力机制自动学习时序变化关系
 
 ### 3. 序列级金融特征处理
 ---
@@ -343,10 +408,10 @@ def check_data_quality(sequences):
 | | OHLC_rel | [0.95, 1.05] |  统一 |
 | **价格变化** | 涨幅 | [-10, 10] |  统一 |
 | | 振幅 | [0, 20] |  统一 |
-| **成交量** | volume_log | [10, 20] |  统一 |
-| | volume_rel | [-50, 50] |  统一 |
-| **金额** | amount_log | [15, 25] |  统一 |
-| | amount_rel | [-50, 50] |  统一 |
+| **成交量** | volume_rel | [0.1, 10] |  统一 |
+| | volume_log | [10, 20] |  统一 |
+| **金额** | amount_rel | [0.1, 10] |  统一 |
+| | amount_log | [15, 25] |  统一 |
 | **市场** | 换手% | [0, 50] |  统一 |
 | | 成交次数 | [100, 10000] |  需标准化 |
 | **金融1** | big_order_activity | [-3, 3] |  统一 |

@@ -91,13 +91,11 @@ class PriceTransformer(nn.Module):
         self.d_model = args.d_model
         self.n_features = 20  # 金融特征数量（根据序列处理器）
         
-        # 金融特征嵌入层（使用RoPE，关闭传统位置编码）
+        # 金融特征嵌入层（位置信息由RoPE处理）
         self.feature_embedding = FinancialEmbeddingLayer(
             d_model=self.d_model,
-            max_seq_len=args.max_seq_len,
             dropout=args.dropout,
-            use_batch_norm=True,
-            use_pos_encoding=False  # 关闭传统位置编码，使用RoPE
+            use_batch_norm=True
         )
         
         # RoPE位置编码（用于注意力层）
@@ -227,15 +225,64 @@ class PriceTransformer(nn.Module):
     def predict_prices(self, financial_data: torch.Tensor) -> torch.Tensor:
         """
         专门用于价格预测的方法
-        
+
         Args:
             financial_data: [batch_size, seq_len, n_features]
-            
+
         Returns:
             price_predictions: [batch_size, 10] 未来10个时间点的价格预测
         """
         outputs = self.forward(financial_data, return_features=False, return_dict=True)
         return outputs["price_predictions"]
+
+    def predict_with_price_conversion(self, recent_data: pd.DataFrame, predict_relative: bool = True) -> dict:
+        """
+        从原始数据预测并转换为绝对价格
+
+        Args:
+            recent_data: 最近的原始数据（至少180天）
+            predict_relative: 是否预测相对值
+
+        Returns:
+            包含预测结果的字典
+        """
+        from .data_cteater import SequenceProcessor, get_price_median_from_features
+
+        # 创建序列处理器
+        processor = SequenceProcessor(sequence_length=180, predict_relative=predict_relative)
+
+        # 创建预测序列（现在包含价格基准）
+        feature_vector = processor.create_prediction_sequence(recent_data)
+
+        # 从特征向量中提取价格基准
+        price_median = get_price_median_from_features(feature_vector)
+
+        # 转换为tensor并预测
+        x = torch.FloatTensor(feature_vector).unsqueeze(0)  # [1, 180, 20]
+
+        # 获取模型预测
+        outputs = self.forward(x, return_features=True, return_dict=True)
+        model_predictions = outputs['price_predictions']  # [1, 10]
+
+        result = {
+            'predictions': model_predictions[0],  # [10] 模型原始预测
+            'strategy_features': outputs['strategy_features'][0],  # [d_model]
+            'last_hidden': outputs['last_hidden'][0],  # [d_model]
+            'price_median': price_median
+        }
+
+        # 如果预测的是相对值，转换为绝对价格
+        if predict_relative:
+            from .data_cteater import convert_relative_to_absolute
+            absolute_prices = convert_relative_to_absolute(
+                model_predictions[0].cpu().numpy(), price_median
+            )
+            result['absolute_prices'] = torch.FloatTensor(absolute_prices)
+        else:
+            # 已经是绝对价格
+            result['absolute_prices'] = model_predictions[0]
+
+        return result
 
 
 class PricePredictionLoss(nn.Module):

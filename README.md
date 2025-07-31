@@ -206,10 +206,10 @@ TransformerBlock × n_layers:
 - 涨幅, 振幅
 
 **成交量特征 (2维)**：
-- volume_rel, volume_change
+- volume_rel (相对值), volume_log (对数值)
 
 **金额特征 (2维)**：
-- amount_rel, amount_change
+- amount_rel (相对值), amount_log (对数值)
 
 **市场活跃度 (2维)**：
 - 换手%, 成交次数
@@ -280,6 +280,33 @@ financial_data = load_financial_data()  # [batch, 180, 20]
 outputs = model(financial_data, return_features=True, return_dict=True)
 price_predictions = outputs['price_predictions']  # [batch, 10]
 print(f"未来10个时间点价格预测: {price_predictions}")
+```
+
+### 两种预测方式（简化版）
+```python
+# 方式1：绝对价格预测
+config_abs = PricePredictionConfigs.for_absolute_prediction()  # predict_relative=False
+processor_abs = SequenceProcessor(sequence_length=180, predict_relative=False)
+
+# 创建训练序列（目标为实际价格）
+sequences_abs = processor_abs.create_training_sequences(stock_data)
+input_seq, target_prices = sequences_abs[0]  # 简化：不需要metadata
+print(f"绝对价格目标: {target_prices}")  # [102.5, 103.2, 101.8, ...]
+
+# 方式2：相对价格预测
+config_rel = PricePredictionConfigs.for_relative_prediction()  # predict_relative=True
+processor_rel = SequenceProcessor(sequence_length=180, predict_relative=True)
+
+# 创建训练序列（目标为相对值）
+sequences_rel = processor_rel.create_training_sequences(stock_data)
+input_seq, target_ratios = sequences_rel[0]  # 简化：不需要metadata
+print(f"相对值目标: {target_ratios}")  # [1.025, 1.032, 1.018, ...]
+
+# 预测时转换（如果需要）
+price_median = 100.0  # 从输入序列获取基准价格
+if config_rel.predict_relative:
+    absolute_prices = target_ratios * price_median
+    print(f"转换后绝对价格: {absolute_prices}")  # [102.5, 103.2, 101.8, ...]
 ```
 
 ### 金融损失函数使用

@@ -18,7 +18,7 @@ class PricePredictionConfig:
     """
     
     # 模型架构参数
-    d_model: int = 512            # 模型维度
+    d_model: int = 512            # 模型维度（统一嵌入，无整除约束）
     n_layers: int = 8             # Transformer层数
     n_heads: int = 8              # 注意力头数
     
@@ -32,11 +32,14 @@ class PricePredictionConfig:
     layer_norm_eps: float = 1e-6  # LayerNorm epsilon
     
     # 数据参数
-    n_features: int = 20          # 输入特征数（修复：应该是20维）
+    n_features: int = 20          # 输入特征数（修正：确实是20维特征）
     sequence_length: int = 180    # 输入序列长度
     prediction_horizon: int = 10  # 预测时间跨度（修复：应该是10个时间点）
     max_seq_len: int = 512        # 最大序列长度（用于RoPE）
     rope_theta: float = 10000.0   # RoPE基础频率参数
+
+    # 预测目标配置
+    predict_relative: bool = True  # True: 预测比值, False: 预测绝对价格
     
     # 训练参数
     batch_size: int = 4           # 批次大小
@@ -98,12 +101,12 @@ class PricePredictionConfigs:
     def tiny():
         """轻量级配置，用于快速测试"""
         return PricePredictionConfig(
-            d_model=256,
+            d_model=256,  # 统一嵌入，无约束
             n_layers=4,
-            n_heads=4,
+            n_heads=4,    # 256/4=64，合理的头维度
             kv_lora_rank=128,
             v_head_dim=64,
-            intermediate_size=512,
+            intermediate_size=1024,  # 4×256
             batch_size=2,
             max_epochs=50
         )
@@ -170,3 +173,19 @@ class PricePredictionConfigs:
             loss_type="mae",  # 多步预测使用MAE
             learning_rate=1e-4
         )
+
+    @staticmethod
+    def for_absolute_prediction():
+        """用于绝对价格预测的配置"""
+        config = PricePredictionConfig()
+        config.predict_relative = False
+        config.loss_type = "mae"  # 绝对价格预测使用MAE更合适
+        return config
+
+    @staticmethod
+    def for_relative_prediction():
+        """用于相对价格预测的配置"""
+        config = PricePredictionConfig()
+        config.predict_relative = True
+        config.loss_type = "mse"  # 相对价格预测使用MSE
+        return config

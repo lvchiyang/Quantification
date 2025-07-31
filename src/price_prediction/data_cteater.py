@@ -7,7 +7,7 @@
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import glob
 import os
 from typing import Tuple, List, Optional
@@ -18,16 +18,19 @@ class SequenceProcessor:
     序列级数据处理器
     核心：每个180天序列独立计算基准，避免数据泄露
     """
-    
-    def __init__(self, sequence_length: int = 180):
+
+    def __init__(self, sequence_length: int = 180, predict_relative: bool = True):
         self.sequence_length = sequence_length
+        self.predict_relative = predict_relative  # True: 预测比值, False: 预测绝对价格
         self.feature_columns = [
             '月', '日', '星期',                           # 时间特征 (3维)
             'open_rel', 'high_rel', 'low_rel', 'close_rel',  # 价格特征 (4维)
             '涨幅', '振幅',                               # 价格变化 (2维)
-            'volume_rel', 'volume_change',                # 成交量特征 (2维)
-            'amount_rel', 'amount_change',                # 金额特征 (2维)
-            '换手%', '成交次数',                          # 市场活跃度 (2维)
+            'volume_rel', 'volume_log',                   # 成交量特征 (2维)
+            'amount_rel', 'amount_log',                   # 金额特征 (2维)
+            '成交次数',                                   # 成交量相关特征 (1维)
+            '换手%',                                     # 市场特征 (1维)
+            'price_median',                              # 价格基准 (1维)
             'big_order_activity', 'chip_concentration',   # 金融特征1,2 (2维)
             'market_sentiment', 'price_volume_sync'       # 金融特征3,4 (2维)
         ]  # 总计20维特征
@@ -56,22 +59,21 @@ class SequenceProcessor:
         # 2. 序列级成交量/金额处理
         def process_volume_amount(col_name):
             values = pd.to_numeric(sequence_df[col_name], errors='coerce').fillna(0)
-            
-            # 序列内中位数基准
+
+            # 序列内中位数基准 - 相对值
             sequence_median = values.median()
             if sequence_median == 0:
                 sequence_median = 1.0
             relative_values = values / sequence_median
-            
-            # 相对变化率（20日滚动均值）
-            rolling_mean = values.rolling(window=20, min_periods=1).mean()
-            rolling_mean = rolling_mean.fillna(method='bfill').fillna(1.0).replace(0, 1.0)
-            relative_change = ((values - rolling_mean) / rolling_mean * 100).fillna(0.0)
-            
-            return relative_values, relative_change
-        
-        volume_rel, volume_change = process_volume_amount('总手')
-        amount_rel, amount_change = process_volume_amount('金额')
+
+            # 对数值 - 绝对水平信息
+            # 使用 log1p 避免 log(0) 问题
+            log_values = np.log1p(values)  # log(1 + x)
+
+            return relative_values, log_values
+
+        volume_rel, volume_log = process_volume_amount('总手')
+        amount_rel, amount_log = process_volume_amount('金额')
         
         # 3. 序列级金融特征处理
         def standardize_without_clipping(series):
@@ -87,33 +89,37 @@ class SequenceProcessor:
         amplitude = pd.to_numeric(sequence_df['振幅'], errors='coerce').fillna(0)
         
         # 金融特征计算
-        big_order_activity = total_volume / (trade_count + 1e-6)
-        
+        # 大单活跃度：平均每笔交易量，需要对数处理和标准化
+        avg_trade_volume = total_volume / (trade_count + 1e-6)
+        big_order_activity = np.log1p(avg_trade_volume)  # 对数处理压缩数值范围
+        big_order_activity = standardize_without_clipping(big_order_activity)
+
         volume_mean = total_volume.rolling(30, min_periods=1).mean().fillna(method='bfill').fillna(1.0)
         volume_normalized = total_volume / (volume_mean + 1e-6)
         chip_concentration = turnover_rate / (volume_normalized + 1e-6)
-        
+        chip_concentration = standardize_without_clipping(chip_concentration)
+
         market_sentiment = price_change * amplitude / 100
-        
+        market_sentiment = standardize_without_clipping(market_sentiment)
+
         price_direction = np.sign(price_change)
         volume_change_pct = total_volume.pct_change().fillna(0)
         volume_direction = np.sign(volume_change_pct)
-        price_volume_sync = price_direction * volume_direction
+        price_volume_sync = price_direction * volume_direction  # 已经是-1,0,1，不需要标准化
         
-        # 标准化但不裁剪
-        big_order_activity = standardize_without_clipping(big_order_activity)
-        chip_concentration = standardize_without_clipping(chip_concentration)
-        market_sentiment = standardize_without_clipping(market_sentiment)
-        
+        # 计算价格基准（序列中位数）
+        sequence_price_median = self._get_sequence_price_median(sequence_df)
+
         return {
             'open_rel': open_rel,
             'high_rel': high_rel,
             'low_rel': low_rel,
             'close_rel': close_rel,
             'volume_rel': volume_rel,
-            'volume_change': volume_change,
+            'volume_log': volume_log,
             'amount_rel': amount_rel,
-            'amount_change': amount_change,
+            'amount_log': amount_log,
+            'price_median': sequence_price_median,  # 添加价格基准
             'big_order_activity': big_order_activity,
             'chip_concentration': chip_concentration,
             'market_sentiment': market_sentiment,
@@ -122,29 +128,33 @@ class SequenceProcessor:
     
     def build_feature_vector(self, sequence_df: pd.DataFrame, computed_features: dict) -> np.ndarray:
         """
-        构建20维特征向量
+        构建22维特征向量（价格基准单独成列）
         """
         # 基础特征（来自原始数据）
         result_df = sequence_df[['月', '日', '星期', '涨幅', '振幅', '换手%', '成交次数']].copy()
-        
-        # 添加计算特征
+
+        # 添加计算特征（包括价格基准）
         for feature_name, feature_values in computed_features.items():
-            result_df[feature_name] = feature_values
-        
+            if feature_name == 'price_median':
+                # 价格基准是标量，需要扩展为数组
+                result_df[feature_name] = feature_values
+            else:
+                result_df[feature_name] = feature_values
+
         # 按照指定顺序选择特征
-        return result_df[self.feature_columns].values  # [180, 20]
+        return result_df[self.feature_columns].values  # [180, 22]
     
     def create_training_sequences(self, cleaned_data: pd.DataFrame) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
         从清洗后的数据创建训练序列
-        
+
         Args:
             cleaned_data: 基础清洗后的数据（14列）
-            
+
         Returns:
             List of (input_sequence, target_prices)
-            input_sequence: [180, 20] 特征矩阵
-            target_prices: [10] 未来10个时间点的close_rel
+            input_sequence: [180, 20] 特征矩阵（已包含价格基准信息）
+            target_prices: [10] 绝对价格或相对值（根据predict_relative配置）
         """
         sequences = []
         target_days = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30]  # 未来第N天
@@ -160,48 +170,71 @@ class SequenceProcessor:
             # 构建特征向量
             feature_vector = self.build_feature_vector(sequence, computed_features)
             
-            # 提取目标价格（未来指定天数的收盘价相对值）
+            # 提取目标价格（简化版本）
             target_prices = []
+            sequence_price_median = self._get_sequence_price_median(sequence)
+
             for day in target_days:
                 target_idx = i + self.sequence_length + day - 1
                 if target_idx < len(cleaned_data):
-                    # 计算目标序列的价格基准（用于计算target的close_rel）
-                    target_sequence = cleaned_data.iloc[i+day:i+day+self.sequence_length]
-                    if len(target_sequence) >= self.sequence_length:
-                        target_features = self.process_sequence_features(target_sequence)
-                        target_close_rel = target_features['close_rel'].iloc[-1]  # 最后一天的close_rel
-                        target_prices.append(target_close_rel)
+                    target_close_price = pd.to_numeric(cleaned_data.iloc[target_idx]['收盘'], errors='coerce')
+                    if pd.isna(target_close_price):
+                        target_close_price = sequence_price_median
+
+                    if self.predict_relative:
+                        # 预测比值
+                        target_prices.append(target_close_price / sequence_price_median)
                     else:
-                        target_prices.append(1.0)  # 默认值
+                        # 预测绝对价格
+                        target_prices.append(target_close_price)
                 else:
-                    target_prices.append(1.0)  # 默认值
-            
+                    # 数据不足时的默认值
+                    target_prices.append(1.0 if self.predict_relative else sequence_price_median)
+
             sequences.append((feature_vector, np.array(target_prices)))
         
         return sequences
-    
+
+    def _get_sequence_price_median(self, sequence_df: pd.DataFrame) -> float:
+        """
+        获取序列的价格基准（中位数）
+
+        Args:
+            sequence_df: 序列数据
+
+        Returns:
+            价格基准值
+        """
+        close_prices = pd.to_numeric(sequence_df['收盘'], errors='coerce').fillna(method='ffill')
+        price_median = close_prices.median()
+        if pd.isna(price_median) or price_median <= 0:
+            price_median = close_prices.mean()
+        if pd.isna(price_median) or price_median <= 0:
+            price_median = 100.0  # 默认基准价格
+        return float(price_median)
+
     def create_prediction_sequence(self, recent_data: pd.DataFrame) -> np.ndarray:
         """
         创建预测序列（最后180天）
-        
+
         Args:
             recent_data: 最近的数据（至少180行）
-            
+
         Returns:
-            feature_vector: [180, 20] 特征矩阵
+            feature_vector: [180, 20] 特征矩阵（已包含价格基准信息）
         """
         if len(recent_data) < self.sequence_length:
             raise ValueError(f"数据长度不足，需要至少{self.sequence_length}天数据")
-        
+
         # 取最后180天
         sequence = recent_data.iloc[-self.sequence_length:].copy()
-        
+
         # 序列级特征工程
         computed_features = self.process_sequence_features(sequence)
-        
-        # 构建特征向量
+
+        # 构建特征向量（已包含价格基准信息）
         feature_vector = self.build_feature_vector(sequence, computed_features)
-        
+
         return feature_vector  # [180, 20]
 
 
@@ -210,8 +243,8 @@ class PriceDataset(Dataset):
     价格预测数据集
     """
     
-    def __init__(self, data_dir: str, sequence_length: int = 180):
-        self.processor = SequenceProcessor(sequence_length)
+    def __init__(self, data_dir: str, sequence_length: int = 180, predict_relative: bool = True):
+        self.processor = SequenceProcessor(sequence_length, predict_relative)
         self.data = []
         
         print(f"加载数据目录: {data_dir}")
@@ -227,18 +260,51 @@ class PriceDataset(Dataset):
                 self.data.extend(sequences)
                 
                 print(f"  生成序列数: {len(sequences)}")
-                
+
             except Exception as e:
                 print(f"处理文件失败: {data_file}, 错误: {e}")
-        
+
         print(f"总序列数: {len(self.data)}")
-    
+
     def __len__(self):
         return len(self.data)
-    
+
     def __getitem__(self, idx):
         input_seq, target_prices = self.data[idx]
         return torch.FloatTensor(input_seq), torch.FloatTensor(target_prices)
+
+
+
+
+def get_price_median_from_features(feature_vector: np.ndarray) -> float:
+    """
+    从特征向量中直接提取价格基准
+
+    Args:
+        feature_vector: [180, 20] 特征矩阵
+
+    Returns:
+        price_median: 价格基准值
+    """
+    # price_median 在第13列（索引12）- 按特征列顺序
+    # 特征顺序：月日星期(3) + 价格(4) + 价格变化(2) + 成交量(2) + 金额(2) + 成交次数(1) + 换手%(1) + price_median(1) + 金融(4)
+    # 所以 price_median 在索引 3+4+2+2+2+1+1 = 15
+    price_median = feature_vector[0, 15]  # 所有时间步的价格基准都相同，取第一个即可
+    return float(price_median)
+
+
+def convert_relative_to_absolute(relative_predictions: np.ndarray, price_median: float) -> np.ndarray:
+    """
+    将相对值预测转换为绝对价格（仅在predict_relative=True时使用）
+
+    Args:
+        relative_predictions: 相对值预测 [batch_size, 10] 或 [10]
+        price_median: 价格基准
+
+    Returns:
+        absolute_prices: 绝对价格 [batch_size, 10] 或 [10]
+    """
+    return relative_predictions * price_median
 
 
 def predict_stock_price(model, stock_file: str, processor: SequenceProcessor = None):
@@ -408,7 +474,6 @@ if __name__ == "__main__":
 
             if len(dataset) > 0:
                 # 创建数据加载器
-                from torch.utils.data import DataLoader
                 dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
                 # 检查数据
